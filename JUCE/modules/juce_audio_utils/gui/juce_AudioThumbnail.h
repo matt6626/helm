@@ -2,17 +2,16 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
 
-   By using JUCE, you agree to the terms of both the JUCE 5 End-User License
-   Agreement and JUCE 5 Privacy Policy (both updated and effective as of the
-   27th April 2017).
+   By using JUCE, you agree to the terms of both the JUCE 7 End-User License
+   Agreement and JUCE Privacy Policy.
 
-   End User License Agreement: www.juce.com/juce-5-licence
-   Privacy Policy: www.juce.com/juce-5-privacy-policy
+   End User License Agreement: www.juce.com/juce-7-licence
+   Privacy Policy: www.juce.com/juce-privacy-policy
 
    Or: You may also use this code under the terms of the GPL v3 (see
    www.gnu.org/licenses).
@@ -32,7 +31,7 @@ namespace juce
     Makes it easy to quickly draw scaled views of the waveform shape of an
     audio file.
 
-    To use this class, just create an AudioThumbNail class for the file you want
+    To use this class, just create an AudioThumbnail class for the file you want
     to draw, call setSource to tell it which file or resource to use, then call
     drawChannel() to draw it.
 
@@ -68,7 +67,7 @@ public:
                     AudioThumbnailCache& cacheToUse);
 
     /** Destructor. */
-    ~AudioThumbnail();
+    ~AudioThumbnail() override;
 
     //==============================================================================
     /** Clears and resets the thumbnail. */
@@ -99,6 +98,18 @@ public:
         it needs to.
     */
     void setReader (AudioFormatReader* newReader, int64 hashCode) override;
+
+    /** Sets an AudioBuffer as the source for the thumbnail.
+
+        The buffer contents aren't copied and you must ensure that the lifetime of the buffer is
+        valid for as long as the AudioThumbnail uses it as its source. Calling this function will
+        start reading the audio in a background thread (unless the hash code can be looked-up
+        successfully in the thumbnail cache).
+    */
+    void setSource (const AudioBuffer<float>* newSource, double sampleRate, int64 hashCode);
+
+    /** Same as the other setSource() overload except for int data. */
+    void setSource (const AudioBuffer<int>* newSource, double sampleRate, int64 hashCode);
 
     /** Resets the thumbnail, ready for adding data with the specified format.
         If you're going to generate a thumbnail yourself, call this before using addBlock()
@@ -201,19 +212,13 @@ private:
     class ThumbData;
     class CachedWindow;
 
-    friend class LevelDataSource;
-    friend class ThumbData;
-    friend class CachedWindow;
-    friend struct ContainerDeletePolicy<LevelDataSource>;
-    friend struct ContainerDeletePolicy<ThumbData>;
-    friend struct ContainerDeletePolicy<CachedWindow>;
-
     std::unique_ptr<LevelDataSource> source;
     std::unique_ptr<CachedWindow> window;
     OwnedArray<ThumbData> channels;
 
     int32 samplesPerThumbSample = 0;
-    int64 totalSamples = 0, numSamplesFinished = 0;
+    int64 totalSamples { 0 };
+    int64 numSamplesFinished = 0;
     int32 numChannels = 0;
     double sampleRate = 0;
     CriticalSection lock;

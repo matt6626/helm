@@ -2,17 +2,16 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
 
-   By using JUCE, you agree to the terms of both the JUCE 5 End-User License
-   Agreement and JUCE 5 Privacy Policy (both updated and effective as of the
-   27th April 2017).
+   By using JUCE, you agree to the terms of both the JUCE 7 End-User License
+   Agreement and JUCE Privacy Policy.
 
-   End User License Agreement: www.juce.com/juce-5-licence
-   Privacy Policy: www.juce.com/juce-5-privacy-policy
+   End User License Agreement: www.juce.com/juce-7-licence
+   Privacy Policy: www.juce.com/juce-privacy-policy
 
    Or: You may also use this code under the terms of the GPL v3 (see
    www.gnu.org/licenses).
@@ -23,6 +22,10 @@
 
   ==============================================================================
 */
+
+#if JUCE_MAC
+ #include <juce_gui_basics/native/juce_mac_PerScreenDisplayLinks.h>
+#endif
 
 namespace juce
 {
@@ -40,8 +43,8 @@ extern Array<AppInactivityCallback*> appBecomingInactiveCallbacks;
 // this prevents them from happening (which some messy locking behaviour)
 struct iOSBackgroundProcessCheck  : public AppInactivityCallback
 {
-    iOSBackgroundProcessCheck()     { isBackgroundProcess(); appBecomingInactiveCallbacks.add (this); }
-    ~iOSBackgroundProcessCheck()    { appBecomingInactiveCallbacks.removeAllInstancesOf (this); }
+    iOSBackgroundProcessCheck()              { isBackgroundProcess(); appBecomingInactiveCallbacks.add (this); }
+    ~iOSBackgroundProcessCheck() override    { appBecomingInactiveCallbacks.removeAllInstancesOf (this); }
 
     bool isBackgroundProcess()
     {
@@ -66,15 +69,77 @@ private:
 
 #endif
 
-//==============================================================================
-class OpenGLContext::CachedImage  : public CachedComponentImage,
-                                    private ThreadPoolJob
+#if JUCE_WINDOWS && JUCE_WIN_PER_MONITOR_DPI_AWARE
+ extern JUCE_API double getScaleFactorForWindow (HWND);
+#endif
+
+static bool contextHasTextureNpotFeature()
 {
+    if (getOpenGLVersion() >= Version (2))
+        return true;
+
+    // If the version is < 2, we can't use the newer extension-checking API
+    // so we have to use glGetString
+    const auto* extensionsBegin = glGetString (GL_EXTENSIONS);
+
+    if (extensionsBegin == nullptr)
+        return false;
+
+    const auto* extensionsEnd = findNullTerminator (extensionsBegin);
+    const std::string extensionsString (extensionsBegin, extensionsEnd);
+    const auto stringTokens = StringArray::fromTokens (extensionsString.c_str(), false);
+    return stringTokens.contains ("GL_ARB_texture_non_power_of_two");
+}
+
+//==============================================================================
+class OpenGLContext::CachedImage  : public CachedComponentImage
+{
+    template <typename T, typename U>
+    static constexpr bool isFlagSet (const T& t, const U& u) { return (t & u) != 0; }
+
+    struct AreaAndScale
+    {
+        Rectangle<int> area;
+        double scale;
+
+        auto tie() const { return std::tie (area, scale); }
+
+        auto operator== (const AreaAndScale& other) const { return tie() == other.tie(); }
+        auto operator!= (const AreaAndScale& other) const { return tie() != other.tie(); }
+    };
+
+    class LockedAreaAndScale
+    {
+    public:
+        auto get() const
+        {
+            const ScopedLock lock (mutex);
+            return data;
+        }
+
+        template <typename Fn>
+        void set (const AreaAndScale& d, Fn&& ifDifferent)
+        {
+            const auto old = [&]
+            {
+                const ScopedLock lock (mutex);
+                return std::exchange (data, d);
+            }();
+
+            if (old != d)
+                ifDifferent();
+        }
+
+    private:
+        CriticalSection mutex;
+        AreaAndScale data { {}, 1.0 };
+    };
+
 public:
     CachedImage (OpenGLContext& c, Component& comp,
                  const OpenGLPixelFormat& pixFormat, void* contextToShare)
-        : ThreadPoolJob ("OpenGL Rendering"),
-          context (c), component (comp)
+        : context (c),
+          component (comp)
     {
         nativeContext.reset (new NativeContext (component, pixFormat, contextToShare,
                                                 c.useMultisampling, c.versionRequired));
@@ -85,7 +150,7 @@ public:
             nativeContext.reset();
     }
 
-    ~CachedImage()
+    ~CachedImage() override
     {
         stop();
     }
@@ -94,58 +159,61 @@ public:
     void start()
     {
         if (nativeContext != nullptr)
-        {
-            renderThread.reset (new ThreadPool (1));
             resume();
-        }
     }
 
     void stop()
     {
-        if (renderThread != nullptr)
+        // make sure everything has finished executing
+        state |= StateFlags::pendingDestruction;
+
+        if (workQueue.size() > 0)
         {
-            // make sure everything has finished executing
-            destroying.set (1);
+            if (! renderThread->contains (this))
+                resume();
 
-            if (workQueue.size() > 0)
-            {
-                if (! renderThread->contains (this))
-                    resume();
-
-                while (workQueue.size() != 0)
-                    Thread::sleep (20);
-            }
-
-            pause();
-            renderThread.reset();
+            while (workQueue.size() != 0)
+                Thread::sleep (20);
         }
 
-        hasInitialised = false;
+        pause();
     }
 
     //==============================================================================
     void pause()
     {
-        signalJobShouldExit();
-        messageManagerLock.abort();
+        renderThread->remove (this);
 
-        if (renderThread != nullptr)
+        if ((state.fetch_and (~StateFlags::initialised) & StateFlags::initialised) != 0)
         {
-            repaintEvent.signal();
-            renderThread->removeJob (this, true, -1);
+            context.makeActive();
+            shutdownOnThread();
+            OpenGLContext::deactivateCurrentContext();
         }
     }
 
     void resume()
     {
-        if (renderThread != nullptr)
-            renderThread->addJob (this, false);
+        renderThread->add (this);
     }
 
     //==============================================================================
     void paint (Graphics&) override
     {
-        updateViewportSize (false);
+        if (MessageManager::getInstance()->isThisTheMessageThread())
+        {
+            updateViewportSize();
+        }
+        else
+        {
+            // If you hit this assertion, it's because paint has been called from a thread other
+            // than the message thread. This commonly happens when nesting OpenGL contexts, because
+            // the 'outer' OpenGL renderer will attempt to call paint on the 'inner' context's
+            // component from the OpenGL thread.
+            // Nesting OpenGL contexts is not directly supported, however there is a workaround:
+            // https://forum.juce.com/t/opengl-how-do-3d-with-custom-shaders-and-2d-with-juce-paint-methods-work-together/28026/7
+            jassertfalse;
+        }
     }
 
     bool invalidateAll() override
@@ -169,13 +237,15 @@ public:
 
     void triggerRepaint()
     {
-        needsUpdate = 1;
-        repaintEvent.signal();
+        state |= (StateFlags::pendingRender | StateFlags::paintComponents);
+        renderThread->triggerRepaint();
     }
 
     //==============================================================================
-    bool ensureFrameBufferSize()
+    bool ensureFrameBufferSize (Rectangle<int> viewportArea)
     {
+        JUCE_ASSERT_MESSAGE_MANAGER_IS_LOCKED
+
         auto fbW = cachedImageFrameBuffer.getWidth();
         auto fbH = cachedImageFrameBuffer.getHeight();
 
@@ -211,135 +281,196 @@ public:
         JUCE_CHECK_OPENGL_ERROR
     }
 
-    bool renderFrameWithNoComponents() {
-        if (! context.makeActive())
-            return false;
-
-        NativeContext::Locker locker (*nativeContext);
-
-        JUCE_CHECK_OPENGL_ERROR
-
-        doWorkWhileWaitingForLock (true);
-
-        if (context.renderer != nullptr)
+    struct ScopedContextActivator
+    {
+        bool activate (OpenGLContext& ctx)
         {
-            glViewport (0, 0, viewportArea.getWidth(), viewportArea.getHeight());
-            context.currentRenderScale = scale;
-            context.renderer->renderOpenGL();
-            clearGLError();
+            if (! active)
+                active = ctx.makeActive();
 
-            bindVertexArray();
+            return active;
         }
 
-        context.swapBuffers();
+        ~ScopedContextActivator()
+        {
+            if (active)
+                OpenGLContext::deactivateCurrentContext();
+        }
 
-        OpenGLContext::deactivateCurrentContext();
-        return true;
-    }
+    private:
+        bool active = false;
+    };
 
-    bool renderFrame()
+    enum class RenderStatus
     {
-        if (!context.renderComponents)
-           return renderFrameWithNoComponents();
+        nominal,
+        messageThreadAborted,
+        noWork,
+    };
 
-        MessageManager::Lock::ScopedTryLockType mmLock (messageManagerLock, false);
-        const bool isUpdating = needsUpdate.compareAndSetBool (0, 1);
+    RenderStatus renderFrame (MessageManager::Lock& mmLock)
+    {
+       if (! isFlagSet (state, StateFlags::initialised))
+       {
+            switch (initialiseOnThread())
+            {
+                case InitResult::fatal:
+                case InitResult::retry: return RenderStatus::noWork;
+                case InitResult::success: break;
+            }
+        }
+
+        state |= StateFlags::initialised;
+
+       #if JUCE_IOS
+        if (backgroundProcessCheck.isBackgroundProcess())
+            return RenderStatus::noWork;
+       #endif
+
+        std::optional<MessageManager::Lock::ScopedTryLockType> scopedLock;
+        ScopedContextActivator contextActivator;
+
+        const auto stateToUse = state.fetch_and (StateFlags::persistent);
+
+        if (! isFlagSet (stateToUse, StateFlags::pendingRender) && ! context.continuousRepaint)
+            return RenderStatus::noWork;
+
+        const auto isUpdating = isFlagSet (stateToUse, StateFlags::paintComponents);
 
         if (context.renderComponents && isUpdating)
         {
+            bool abortScope = false;
+            // If we early-exit here, we need to restore these flags so that the render is
+            // attempted again in the next time slice.
+            const ScopeGuard scope { [&] { if (! abortScope) state |= stateToUse; } };
 
             // This avoids hogging the message thread when doing intensive rendering.
-            if (lastMMLockReleaseTime + 1 >= Time::getMillisecondCounter())
-                Thread::sleep (2);
+            std::this_thread::sleep_until (lastMMLockReleaseTime + std::chrono::milliseconds { 2 });
 
-            while (! shouldExit())
+            if (renderThread->isListChanging())
+                return RenderStatus::messageThreadAborted;
+
+            doWorkWhileWaitingForLock (contextActivator);
+
+            scopedLock.emplace (mmLock);
+
+            // If we can't get the lock here, it's probably because a context has been removed
+            // on the main thread.
+            // We return, just in case this renderer needs to be removed from the rendering thread.
+            // If another renderer is being removed instead, then we should be able to get the lock
+            // next time round.
+            if (! scopedLock->isLocked())
+                return RenderStatus::messageThreadAborted;
+
+            abortScope = true;
+        }
+
+        if (! contextActivator.activate (context))
+            return RenderStatus::noWork;
+
+        {
+            NativeContext::Locker locker (*nativeContext);
+
+            JUCE_CHECK_OPENGL_ERROR
+
+            doWorkWhileWaitingForLock (contextActivator);
+
+            const auto currentAreaAndScale = areaAndScale.get();
+            const auto viewportArea = currentAreaAndScale.area;
+
+            if (context.renderer != nullptr)
             {
-                doWorkWhileWaitingForLock (false);
+                glViewport (0, 0, viewportArea.getWidth(), viewportArea.getHeight());
+                context.currentRenderScale = currentAreaAndScale.scale;
+                context.renderer->renderOpenGL();
+                clearGLError();
 
-                if (mmLock.retryLock())
-                    break;
+                bindVertexArray();
             }
 
-            if (shouldExit())
-                return false;
-        }
-
-        if (! context.makeActive())
-            return false;
-
-        NativeContext::Locker locker (*nativeContext);
-
-        JUCE_CHECK_OPENGL_ERROR
-
-        doWorkWhileWaitingForLock (true);
-
-        if (context.renderer != nullptr)
-        {
-            glViewport (0, 0, viewportArea.getWidth(), viewportArea.getHeight());
-            context.currentRenderScale = scale;
-            context.renderer->renderOpenGL();
-            clearGLError();
-
-            bindVertexArray();
-        }
-
-        if (context.renderComponents)
-        {
-            if (isUpdating)
+            if (context.renderComponents)
             {
-                paintComponent();
+                if (isUpdating)
+                {
+                    paintComponent (currentAreaAndScale);
 
-                if (! hasInitialised)
-                    return false;
+                    if (! isFlagSet (state, StateFlags::initialised))
+                        return RenderStatus::noWork;
 
-                messageManagerLock.exit();
-                lastMMLockReleaseTime = Time::getMillisecondCounter();
+                    scopedLock.reset();
+                    lastMMLockReleaseTime = std::chrono::steady_clock::now();
+                }
+
+                glViewport (0, 0, viewportArea.getWidth(), viewportArea.getHeight());
+                drawComponentBuffer();
             }
-
-            glViewport (0, 0, viewportArea.getWidth(), viewportArea.getHeight());
-            drawComponentBuffer();
         }
 
-        context.swapBuffers();
-
-        OpenGLContext::deactivateCurrentContext();
-        return true;
+        nativeContext->swapBuffers();
+        return RenderStatus::nominal;
     }
 
-    void updateViewportSize (bool canTriggerUpdate)
+    void updateViewportSize()
     {
+        JUCE_ASSERT_MESSAGE_THREAD
+
         if (auto* peer = component.getPeer())
         {
-            lastScreenBounds = component.getTopLevelComponent()->getScreenBounds();
+           #if JUCE_MAC
+            updateScreen();
 
-            auto newScale = Desktop::getInstance().getDisplays()
-                              .getDisplayContaining (lastScreenBounds.getCentre()).scale;
-
-            auto localBounds = component.getLocalBounds();
-
-            auto newArea = peer->getComponent().getLocalArea (&component, localBounds)
-                                               .withZeroOrigin()
-                             * newScale;
-
-            if (scale != newScale || viewportArea != newArea)
+            const auto displayScale = Desktop::getInstance().getGlobalScaleFactor() * [this]
             {
-                scale = newScale;
-                viewportArea = newArea;
-                transform = AffineTransform::scale ((float) newArea.getRight()  / (float) localBounds.getRight(),
-                                                    (float) newArea.getBottom() / (float) localBounds.getBottom());
+                if (auto* view = getCurrentView())
+                {
+                    if ([view respondsToSelector: @selector (backingScaleFactor)])
+                        return [(id) view backingScaleFactor];
 
-                if (canTriggerUpdate)
-                    invalidateAll();
-            }
+                    if (auto* window = [view window])
+                        return [window backingScaleFactor];
+                }
+
+                return areaAndScale.get().scale;
+            }();
+           #else
+            const auto displayScale = Desktop::getInstance().getDisplays()
+                                                            .getDisplayForRect (component.getTopLevelComponent()
+                                                                                        ->getScreenBounds())
+                                                           ->scale;
+           #endif
+
+            const auto localBounds = component.getLocalBounds();
+            const auto newArea = peer->getComponent().getLocalArea (&component, localBounds).withZeroOrigin() * displayScale;
+
+           #if JUCE_WINDOWS && JUCE_WIN_PER_MONITOR_DPI_AWARE
+            // Some hosts (Pro Tools 2022.7) do not take the current DPI into account when sizing
+            // plugin editor windows. Instead of querying the OS for the DPI of the editor window,
+            // we approximate based on the physical size of the window that was actually provided
+            // for the context to draw into. This may break if the OpenGL context's component is
+            // scaled differently in its width and height - but in this case, a single scale factor
+            // isn't that helpful anyway.
+            const auto newScale = (float) newArea.getWidth() / (float) localBounds.getWidth();
+           #else
+            const auto newScale = (float) displayScale;
+           #endif
+
+            areaAndScale.set ({ newArea, newScale }, [&]
+            {
+                // Transform is only accessed when the message manager is locked
+                transform = AffineTransform::scale ((float) newArea.getWidth()  / (float) localBounds.getWidth(),
+                                                    (float) newArea.getHeight() / (float) localBounds.getHeight());
+
+                nativeContext->updateWindowPosition (peer->getAreaCoveredBy (component));
+                invalidateAll();
+            });
         }
     }
 
     void bindVertexArray() noexcept
     {
-       #if JUCE_OPENGL3
-        if (vertexArrayObject != 0)
-            context.extensions.glBindVertexArray (vertexArrayObject);
-       #endif
+        if (shouldUseCustomVAO())
+            if (vertexArrayObject != 0)
+                context.extensions.glBindVertexArray (vertexArrayObject);
     }
 
     void checkViewportBounds()
@@ -347,20 +478,25 @@ public:
         auto screenBounds = component.getTopLevelComponent()->getScreenBounds();
 
         if (lastScreenBounds != screenBounds)
-            updateViewportSize (true);
+        {
+            updateViewportSize();
+            lastScreenBounds = screenBounds;
+        }
     }
 
-    void paintComponent()
+    void paintComponent (const AreaAndScale& currentAreaAndScale)
     {
+        JUCE_ASSERT_MESSAGE_MANAGER_IS_LOCKED
+
         // you mustn't set your own cached image object when attaching a GL context!
         jassert (get (component) == this);
 
-        if (! ensureFrameBufferSize())
+        if (! ensureFrameBufferSize (currentAreaAndScale.area))
             return;
 
-        RectangleList<int> invalid (viewportArea);
+        RectangleList<int> invalid (currentAreaAndScale.area);
         invalid.subtract (validArea);
-        validArea = viewportArea;
+        validArea = currentAreaAndScale.area;
 
         if (! invalid.isEmpty())
         {
@@ -384,10 +520,8 @@ public:
 
     void drawComponentBuffer()
     {
-       #if ! JUCE_ANDROID
-        glEnable (GL_TEXTURE_2D);
-        clearGLError();
-       #endif
+        if (contextRequiresTexture2DEnableDisable())
+            glEnable (GL_TEXTURE_2D);
 
        #if JUCE_WINDOWS
         // some stupidly old drivers are missing this function, so try to at least avoid a crash here,
@@ -396,7 +530,9 @@ public:
         jassert (context.extensions.glActiveTexture != nullptr);
         if (context.extensions.glActiveTexture != nullptr)
        #endif
+        {
             context.extensions.glActiveTexture (GL_TEXTURE0);
+        }
 
         glBindTexture (GL_TEXTURE_2D, cachedImageFrameBuffer.getTextureID());
         bindVertexArray();
@@ -446,83 +582,32 @@ public:
 
     void handleResize()
     {
-        updateViewportSize (true);
+        updateViewportSize();
 
        #if JUCE_MAC
-        if (hasInitialised)
+        if (isFlagSet (state, StateFlags::initialised))
         {
             [nativeContext->view update];
-            renderFrame();
+
+            // We're already on the message thread, no need to lock it again.
+            MessageManager::Lock mml;
+            renderFrame (mml);
         }
        #endif
     }
 
     //==============================================================================
-    JobStatus runJob() override
+    InitResult initialiseOnThread()
     {
-        {
-            // Allow the message thread to finish setting-up the context before using it..
-            MessageManager::Lock::ScopedTryLockType mmLock (messageManagerLock, false);
-
-            do
-            {
-                if (shouldExit())
-                    return ThreadPoolJob::jobHasFinished;
-
-            } while (! mmLock.retryLock());
-        }
-
-        if (! initialiseOnThread())
-        {
-            hasInitialised = false;
-
-            return ThreadPoolJob::jobHasFinished;
-        }
-
-        hasInitialised = true;
-
-        while (! shouldExit())
-        {
-           #if JUCE_IOS
-            if (backgroundProcessCheck.isBackgroundProcess())
-            {
-                repaintEvent.wait (300);
-                continue;
-            }
-           #endif
-
-            if (shouldExit())
-                break;
-
-            if (! renderFrame())
-                repaintEvent.wait (5); // failed to render, so avoid a tight fail-loop.
-            else if (! context.continuousRepaint && ! shouldExit())
-                repaintEvent.wait (-1);
-           #if JUCE_WINDOWS
-            else
-                repaintEvent.wait(8);
-           #endif
-        }
-
-        hasInitialised = false;
-        context.makeActive();
-        shutdownOnThread();
-        OpenGLContext::deactivateCurrentContext();
-
-        return ThreadPoolJob::jobHasFinished;
-    }
-
-    bool initialiseOnThread()
-    {
-        // On android, this can get called twice, so drop any previous state..
+        // On android, this can get called twice, so drop any previous state.
         associatedObjectNames.clear();
         associatedObjects.clear();
         cachedImageFrameBuffer.release();
 
         context.makeActive();
 
-        if (! nativeContext->initialiseOnRenderThread (context))
-            return false;
+        if (const auto nativeResult = nativeContext->initialiseOnRenderThread (context); nativeResult != InitResult::success)
+            return nativeResult;
 
        #if JUCE_ANDROID
         // On android the context may be created in initialiseOnRenderThread
@@ -530,17 +615,31 @@ public:
         context.makeActive();
        #endif
 
-        context.extensions.initialise();
+        gl::loadFunctions();
 
-       #if JUCE_OPENGL3
-        if (OpenGLShaderProgram::getLanguageVersion() > 1.2)
+        if (shouldUseCustomVAO())
         {
             context.extensions.glGenVertexArrays (1, &vertexArrayObject);
             bindVertexArray();
         }
+
+       #if JUCE_DEBUG
+        if (getOpenGLVersion() >= Version { 4, 3 } && glDebugMessageCallback != nullptr)
+        {
+            glEnable (GL_DEBUG_OUTPUT);
+            glDebugMessageCallback ([] (GLenum type, GLenum, GLuint, GLenum severity, GLsizei, const GLchar* message, const void*)
+            {
+                // This may reiterate issues that are also flagged by JUCE_CHECK_OPENGL_ERROR.
+                // The advantage of this callback is that it will catch *all* errors, even if we
+                // forget to check manually.
+                DBG ("OpenGL DBG message: " << message);
+                jassertquiet (type != GL_DEBUG_TYPE_ERROR && severity != GL_DEBUG_SEVERITY_HIGH);
+            }, nullptr);
+        }
        #endif
 
-        glViewport (0, 0, component.getWidth(), component.getHeight());
+        const auto currentViewportArea = areaAndScale.get().area;
+        glViewport (0, 0, currentViewportArea.getWidth(), currentViewportArea.getHeight());
 
         nativeContext->setSwapInterval (1);
 
@@ -550,10 +649,12 @@ public:
         clearGLError();
        #endif
 
+        textureNpotSupported = contextHasTextureNpotFeature();
+
         if (context.renderer != nullptr)
             context.renderer->newOpenGLContextCreated();
 
-        return true;
+        return InitResult::success;
     }
 
     void shutdownOnThread()
@@ -561,10 +662,8 @@ public:
         if (context.renderer != nullptr)
             context.renderer->openGLContextClosing();
 
-       #if JUCE_OPENGL3
         if (vertexArrayObject != 0)
             context.extensions.glDeleteVertexArrays (1, &vertexArrayObject);
-       #endif
 
         associatedObjectNames.clear();
         associatedObjects.clear();
@@ -572,11 +671,36 @@ public:
         nativeContext->shutdownOnRenderThread();
     }
 
+    /*  Returns true if the context requires a non-zero vertex array object (VAO) to be bound.
+
+        If the context is a compatibility context, we can just pretend that VAOs don't exist,
+        and use the default VAO all the time instead. This provides a more consistent experience
+        in user code, which might make calls (like glVertexPointer()) that only work when VAO 0 is
+        bound in OpenGL 3.2+.
+    */
+    bool shouldUseCustomVAO() const
+    {
+       #if JUCE_OPENGL_ES
+        return false;
+       #else
+        clearGLError();
+        GLint mask = 0;
+        glGetIntegerv (GL_CONTEXT_PROFILE_MASK, &mask);
+
+        // The context isn't aware of the profile mask, so it pre-dates the core profile
+        if (glGetError() == GL_INVALID_ENUM)
+            return false;
+
+        // Also assumes a compatibility profile if the mask is completely empty for some reason
+        return (mask & (GLint) GL_CONTEXT_CORE_PROFILE_BIT) != 0;
+       #endif
+    }
+
     //==============================================================================
     struct BlockingWorker  : public OpenGLContext::AsyncWorker
     {
         BlockingWorker (OpenGLContext::AsyncWorker::Ptr && workerToUse)
-            : originalWorker (static_cast<OpenGLContext::AsyncWorker::Ptr&&> (workerToUse))
+            : originalWorker (std::move (workerToUse))
         {}
 
         void operator() (OpenGLContext& calleeContext)
@@ -593,50 +717,46 @@ public:
         WaitableEvent finishedSignal;
     };
 
-    bool doWorkWhileWaitingForLock (bool contextIsAlreadyActive)
+    void doWorkWhileWaitingForLock (ScopedContextActivator& contextActivator)
     {
-        bool contextActivated = false;
-
-        for (OpenGLContext::AsyncWorker::Ptr work = workQueue.removeAndReturn (0);
-             work != nullptr && (! shouldExit()); work = workQueue.removeAndReturn (0))
+        while (const auto work = workQueue.removeAndReturn (0))
         {
-            if ((! contextActivated) && (! contextIsAlreadyActive))
-            {
-                if (! context.makeActive())
-                    break;
-
-                contextActivated = true;
-            }
+            if (renderThread->isListChanging() || ! contextActivator.activate (context))
+                break;
 
             NativeContext::Locker locker (*nativeContext);
 
             (*work) (context);
             clearGLError();
         }
-
-        if (contextActivated)
-            OpenGLContext::deactivateCurrentContext();
-
-        return shouldExit();
     }
 
-    void execute (OpenGLContext::AsyncWorker::Ptr workerToUse, bool shouldBlock, bool calledFromDestructor = false)
+    void execute (OpenGLContext::AsyncWorker::Ptr workerToUse, bool shouldBlock)
     {
-        if (calledFromDestructor || destroying.get() == 0)
+        if (! isFlagSet (state, StateFlags::pendingDestruction))
         {
-            BlockingWorker* blocker = (shouldBlock ? new BlockingWorker (static_cast<OpenGLContext::AsyncWorker::Ptr&&> (workerToUse)) : nullptr);
-            OpenGLContext::AsyncWorker::Ptr worker = (blocker != nullptr ? blocker : static_cast<OpenGLContext::AsyncWorker::Ptr&&> (workerToUse));
-            workQueue.add (worker);
+            if (shouldBlock)
+            {
+                auto blocker = new BlockingWorker (std::move (workerToUse));
+                OpenGLContext::AsyncWorker::Ptr worker (*blocker);
+                workQueue.add (worker);
 
-            messageManagerLock.abort();
-            context.triggerRepaint();
+                renderThread->abortLock();
+                context.triggerRepaint();
 
-            if (blocker != nullptr)
                 blocker->block();
+            }
+            else
+            {
+                workQueue.add (std::move (workerToUse));
+
+                renderThread->abortLock();
+                context.triggerRepaint();
+            }
         }
         else
         {
-            jassertfalse; // you called execute AFTER you detached your openglcontext
+            jassertfalse; // you called execute AFTER you detached your OpenGLContext
         }
     }
 
@@ -646,6 +766,156 @@ public:
         return dynamic_cast<CachedImage*> (c.getCachedComponentImage());
     }
 
+    class RenderThread
+    {
+    public:
+        RenderThread() = default;
+
+        ~RenderThread()
+        {
+            flags.setDestructing();
+            thread.join();
+        }
+
+        void add (CachedImage* x)
+        {
+            const std::scoped_lock lock { listMutex };
+            images.push_back (x);
+        }
+
+        void remove (CachedImage* x)
+        {
+            JUCE_ASSERT_MESSAGE_THREAD;
+
+            flags.setSafe (false);
+            abortLock();
+
+            {
+                const std::scoped_lock lock { callbackMutex, listMutex };
+                images.remove (x);
+            }
+
+            flags.setSafe (true);
+        }
+
+        bool contains (CachedImage* x)
+        {
+            const std::scoped_lock lock { listMutex };
+            return std::find (images.cbegin(), images.cend(), x) != images.cend();
+        }
+
+        void triggerRepaint()   { flags.setRenderRequested(); }
+
+        void abortLock()        { messageManagerLock.abort(); }
+
+        bool isListChanging()   { return ! flags.isSafe(); }
+
+    private:
+        RenderStatus renderAll()
+        {
+            auto result = RenderStatus::noWork;
+
+            const std::scoped_lock lock { callbackMutex, listMutex };
+
+            for (auto* x : images)
+            {
+                listMutex.unlock();
+                const ScopeGuard scope { [&] { listMutex.lock(); } };
+
+                const auto status = x->renderFrame (messageManagerLock);
+
+                switch (status)
+                {
+                    case RenderStatus::noWork: break;
+                    case RenderStatus::nominal: result = RenderStatus::nominal; break;
+                    case RenderStatus::messageThreadAborted: return RenderStatus::messageThreadAborted;
+                }
+
+            }
+
+            return result;
+        }
+
+        /*  Allows the main thread to communicate changes to the render thread.
+
+            When the render thread needs to change in some way (asked to resume rendering,
+            a renderer is added/removed, or the thread needs to stop prior to destruction),
+            the main thread can set the appropriate flag on this structure. The render thread
+            will call waitForWork() repeatedly, pausing when the render thread has no work to do,
+            and resuming when requested by the main thread.
+        */
+        class Flags
+        {
+        public:
+            void setDestructing()       { update ([] (auto& f) { f |= destructorCalled; }); }
+            void setRenderRequested()   { update ([] (auto& f) { f |= renderRequested;  }); }
+
+            void setSafe (const bool safe)
+            {
+                update ([safe] (auto& f)
+                {
+                    if (safe)
+                        f |= listSafe;
+                    else
+                        f &= ~listSafe;
+                });
+            }
+
+            bool isSafe()
+            {
+                const std::scoped_lock lock { mutex };
+                return (flags & listSafe) != 0;
+            }
+
+            /*  Blocks until the 'safe' flag is set, and at least one other flag is set.
+                After returning, the renderRequested flag will be unset.
+                Returns true if rendering should continue.
+            */
+            bool waitForWork (bool requestRender)
+            {
+                std::unique_lock lock { mutex };
+                flags |= (requestRender ? renderRequested : 0);
+                condvar.wait (lock, [this] { return flags > listSafe; });
+                flags &= ~renderRequested;
+                return ((flags & destructorCalled) == 0);
+            }
+
+        private:
+            template <typename Fn>
+            void update (Fn fn)
+            {
+                {
+                    const std::scoped_lock lock { mutex };
+                    fn (flags);
+                }
+
+                condvar.notify_one();
+            }
+
+            enum
+            {
+                renderRequested  = 1 << 0,
+                destructorCalled = 1 << 1,
+                listSafe         = 1 << 2
+            };
+
+            std::mutex mutex;
+            std::condition_variable condvar;
+            int flags = listSafe;
+        };
+
+        MessageManager::Lock messageManagerLock;
+        std::mutex listMutex, callbackMutex;
+        std::list<CachedImage*> images;
+        Flags flags;
+
+        std::thread thread { [this]
+        {
+            Thread::setCurrentThreadName ("OpenGL Renderer");
+            while (flags.waitForWork (renderAll() != RenderStatus::noWork)) {}
+        } };
+    };
+
     //==============================================================================
     friend class NativeContext;
     std::unique_ptr<NativeContext> nativeContext;
@@ -653,31 +923,109 @@ public:
     OpenGLContext& context;
     Component& component;
 
+    SharedResourcePointer<RenderThread> renderThread;
+
     OpenGLFrameBuffer cachedImageFrameBuffer;
     RectangleList<int> validArea;
-    Rectangle<int> viewportArea, lastScreenBounds;
-    double scale = 1.0;
+    Rectangle<int> lastScreenBounds;
     AffineTransform transform;
-   #if JUCE_OPENGL3
     GLuint vertexArrayObject = 0;
-   #endif
+    LockedAreaAndScale areaAndScale;
 
     StringArray associatedObjectNames;
     ReferenceCountedArray<ReferenceCountedObject> associatedObjects;
 
-    WaitableEvent canPaintNowFlag, finishedPaintingFlag, repaintEvent;
+    WaitableEvent canPaintNowFlag, finishedPaintingFlag;
    #if JUCE_OPENGL_ES
     bool shadersAvailable = true;
    #else
     bool shadersAvailable = false;
    #endif
-    bool hasInitialised = false;
-    Atomic<int> needsUpdate { 1 }, destroying;
-    uint32 lastMMLockReleaseTime = 0;
+    bool textureNpotSupported = false;
+    std::chrono::steady_clock::time_point lastMMLockReleaseTime{};
 
-    std::unique_ptr<ThreadPool> renderThread;
+   #if JUCE_MAC
+    NSView* getCurrentView() const
+    {
+        JUCE_ASSERT_MESSAGE_THREAD;
+
+        if (auto* peer = component.getPeer())
+            return static_cast<NSView*> (peer->getNativeHandle());
+
+        return nullptr;
+    }
+
+    NSWindow* getCurrentWindow() const
+    {
+        JUCE_ASSERT_MESSAGE_THREAD;
+
+        if (auto* view = getCurrentView())
+            return [view window];
+
+        return nullptr;
+    }
+
+    NSScreen* getCurrentScreen() const
+    {
+        JUCE_ASSERT_MESSAGE_THREAD;
+
+        if (auto* window = getCurrentWindow())
+            return [window screen];
+
+        return nullptr;
+    }
+
+    void updateScreen()
+    {
+        const auto screen = getCurrentScreen();
+        const auto display = ScopedDisplayLink::getDisplayIdForScreen (screen);
+
+        if (lastDisplay.exchange (display) == display)
+            return;
+
+        const auto newRefreshPeriod = sharedDisplayLinks->getNominalVideoRefreshPeriodSForScreen (display);
+
+        if (newRefreshPeriod != 0.0 && std::exchange (refreshPeriod, newRefreshPeriod) != newRefreshPeriod)
+            nativeContext->setNominalVideoRefreshPeriodS (newRefreshPeriod);
+
+        updateColourSpace();
+    }
+
+    void updateColourSpace()
+    {
+        if (auto* view = nativeContext->getNSView())
+            if (auto* window = [view window])
+                [window setColorSpace: [NSColorSpace sRGBColorSpace]];
+    }
+
+    std::atomic<CGDirectDisplayID> lastDisplay { 0 };
+    double refreshPeriod = 0.0;
+
+    FunctionNotificationCenterObserver observer { NSWindowDidChangeScreenNotification,
+                                                  getCurrentWindow(),
+                                                  [this] { updateScreen(); } };
+
+    // Note: the NSViewComponentPeer also has a SharedResourcePointer<PerScreenDisplayLinks> to
+    // avoid unnecessarily duplicating display-link threads.
+    SharedResourcePointer<PerScreenDisplayLinks> sharedDisplayLinks;
+   #endif
+
+    enum StateFlags
+    {
+        pendingRender           = 1 << 0,
+        paintComponents         = 1 << 1,
+        pendingDestruction      = 1 << 2,
+        initialised             = 1 << 3,
+
+        // Flags that may change state after each frame
+        transient               = pendingRender | paintComponents,
+
+        // Flags that should retain their state after each frame
+        persistent              = initialised | pendingDestruction
+    };
+
+    std::atomic<int> state { 0 };
     ReferenceCountedArray<OpenGLContext::AsyncWorker, CriticalSection> workQueue;
-    MessageManager::Lock messageManagerLock;
 
    #if JUCE_IOS
     iOSBackgroundProcessCheck backgroundProcessCheck;
@@ -698,7 +1046,7 @@ public:
             attach();
     }
 
-    ~Attachment()
+    ~Attachment() override
     {
         detach();
     }
@@ -729,6 +1077,8 @@ public:
         }
     }
 
+    using ComponentMovementWatcher::componentMovedOrResized;
+
     void componentPeerChanged() override
     {
         detach();
@@ -752,6 +1102,8 @@ public:
         }
     }
 
+    using ComponentMovementWatcher::componentVisibilityChanged;
+
    #if JUCE_DEBUG || JUCE_LOG_ASSERTIONS
     void componentBeingDeleted (Component& c) override
     {
@@ -763,16 +1115,6 @@ public:
         ComponentMovementWatcher::componentBeingDeleted (c);
     }
    #endif
-
-    void update()
-    {
-        auto& comp = *getComponent();
-
-        if (canBeAttached (comp))
-            start();
-        else
-            stop();
-    }
 
 private:
     OpenGLContext& context;
@@ -830,7 +1172,7 @@ private:
         if (auto* cachedImage = CachedImage::get (comp))
         {
             cachedImage->start(); // (must wait until this is attached before starting its thread)
-            cachedImage->updateViewportSize (true);
+            cachedImage->updateViewportSize();
 
             startTimer (400);
         }
@@ -874,6 +1216,15 @@ void OpenGLContext::setComponentPaintingEnabled (bool shouldPaintComponent) noex
 void OpenGLContext::setContinuousRepainting (bool shouldContinuouslyRepaint) noexcept
 {
     continuousRepaint = shouldContinuouslyRepaint;
+
+    #if JUCE_MAC
+     if (auto* component = getTargetComponent())
+     {
+         detach();
+         attachment.reset (new Attachment (*this, *component));
+     }
+    #endif
+
     triggerRepaint();
 }
 
@@ -1032,6 +1383,12 @@ bool OpenGLContext::areShadersAvailable() const
     return c != nullptr && c->shadersAvailable;
 }
 
+bool OpenGLContext::isTextureNpotSupported() const
+{
+    auto* c = getCachedImage();
+    return c != nullptr && c->textureNpotSupported;
+}
+
 ReferenceCountedObject* OpenGLContext::getAssociatedObject (const char* name) const
 {
     jassert (name != nullptr);
@@ -1042,8 +1399,8 @@ ReferenceCountedObject* OpenGLContext::getAssociatedObject (const char* name) co
     jassert (c != nullptr && nativeContext != nullptr);
     jassert (getCurrentContext() != nullptr);
 
-    const int index = c->associatedObjectNames.indexOf (name);
-    return index >= 0 ? c->associatedObjects.getUnchecked (index) : nullptr;
+    auto index = c->associatedObjectNames.indexOf (name);
+    return index >= 0 ? c->associatedObjects.getUnchecked (index).get() : nullptr;
 }
 
 void OpenGLContext::setAssociatedObject (const char* name, ReferenceCountedObject* newObject)
@@ -1084,20 +1441,9 @@ size_t OpenGLContext::getImageCacheSize() const noexcept            { return ima
 void OpenGLContext::execute (OpenGLContext::AsyncWorker::Ptr workerToUse, bool shouldBlock)
 {
     if (auto* c = getCachedImage())
-        c->execute (static_cast<OpenGLContext::AsyncWorker::Ptr&&> (workerToUse), shouldBlock);
+        c->execute (std::move (workerToUse), shouldBlock);
     else
         jassertfalse; // You must have attached the context to a component
-}
-
-void OpenGLContext::overrideCanBeAttached (bool newCanAttach)
-{
-    if (overrideCanAttach != newCanAttach)
-    {
-        overrideCanAttach = newCanAttach;
-
-        if (auto* a = attachment.get())
-            a->update();
-    }
 }
 
 //==============================================================================
@@ -1140,7 +1486,7 @@ void OpenGLContext::copyTexture (const Rectangle<int>& targetClipArea,
         struct OverlayShaderProgram  : public ReferenceCountedObject
         {
             OverlayShaderProgram (OpenGLContext& context)
-                : program (context), builder (program), params (program)
+                : program (context), params (program)
             {}
 
             static const OverlayShaderProgram& select (OpenGLContext& context)
@@ -1158,11 +1504,12 @@ void OpenGLContext::copyTexture (const Rectangle<int>& targetClipArea,
                 return *program;
             }
 
-            struct ProgramBuilder
+            struct BuiltProgram : public OpenGLShaderProgram
             {
-                ProgramBuilder (OpenGLShaderProgram& prog)
+                explicit BuiltProgram (OpenGLContext& ctx)
+                    : OpenGLShaderProgram (ctx)
                 {
-                    prog.addVertexShader (OpenGLHelpers::translateVertexShaderToV3 (
+                    addVertexShader (OpenGLHelpers::translateVertexShaderToV3 (
                         "attribute " JUCE_HIGHP " vec2 position;"
                         "uniform " JUCE_HIGHP " vec2 screenSize;"
                         "uniform " JUCE_HIGHP " float textureBounds[4];"
@@ -1176,7 +1523,7 @@ void OpenGLContext::copyTexture (const Rectangle<int>& targetClipArea,
                           "texturePos = vec2 (texturePos.x, vOffsetAndScale.x + vOffsetAndScale.y * texturePos.y);"
                         "}"));
 
-                    prog.addFragmentShader (OpenGLHelpers::translateFragmentShaderToV3 (
+                    addFragmentShader (OpenGLHelpers::translateFragmentShaderToV3 (
                         "uniform sampler2D imageTexture;"
                         "varying " JUCE_HIGHP " vec2 texturePos;"
                         "void main()"
@@ -1184,7 +1531,7 @@ void OpenGLContext::copyTexture (const Rectangle<int>& targetClipArea,
                           "gl_FragColor = texture2D (imageTexture, texturePos);"
                         "}"));
 
-                    prog.link();
+                    link();
                 }
             };
 
@@ -1213,8 +1560,7 @@ void OpenGLContext::copyTexture (const Rectangle<int>& targetClipArea,
                 OpenGLShaderProgram::Uniform screenSize, imageTexture, textureBounds, vOffsetAndScale;
             };
 
-            OpenGLShaderProgram program;
-            ProgramBuilder builder;
+            BuiltProgram program;
             Params params;
         };
 
@@ -1233,16 +1579,23 @@ void OpenGLContext::copyTexture (const Rectangle<int>& targetClipArea,
         extensions.glBufferData (GL_ARRAY_BUFFER, sizeof (vertices), vertices, GL_STATIC_DRAW);
 
         auto index = (GLuint) program.params.positionAttribute.attributeID;
-        extensions.glVertexAttribPointer (index, 2, GL_SHORT, GL_FALSE, 4, 0);
+        extensions.glVertexAttribPointer (index, 2, GL_SHORT, GL_FALSE, 4, nullptr);
         extensions.glEnableVertexAttribArray (index);
         JUCE_CHECK_OPENGL_ERROR
 
-        glDrawArrays (GL_TRIANGLE_STRIP, 0, 4);
+        if (extensions.glCheckFramebufferStatus (GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
+        {
+            glDrawArrays (GL_TRIANGLE_STRIP, 0, 4);
 
-        extensions.glBindBuffer (GL_ARRAY_BUFFER, 0);
-        extensions.glUseProgram (0);
-        extensions.glDisableVertexAttribArray (index);
-        extensions.glDeleteBuffers (1, &vertexBuffer);
+            extensions.glBindBuffer (GL_ARRAY_BUFFER, 0);
+            extensions.glUseProgram (0);
+            extensions.glDisableVertexAttribArray (index);
+            extensions.glDeleteBuffers (1, &vertexBuffer);
+        }
+        else
+        {
+            clearGLError();
+        }
     }
     else
     {
@@ -1253,40 +1606,56 @@ void OpenGLContext::copyTexture (const Rectangle<int>& targetClipArea,
 }
 
 #if JUCE_ANDROID
-EGLDisplay OpenGLContext::NativeContext::display = EGL_NO_DISPLAY;
-EGLDisplay OpenGLContext::NativeContext::config;
 
-void OpenGLContext::NativeContext::surfaceCreated (jobject holder)
+void OpenGLContext::NativeContext::surfaceCreated (LocalRef<jobject>)
 {
-    ignoreUnused (holder);
-
-    if (auto* cachedImage = CachedImage::get (component))
     {
-        if (auto* pool = cachedImage->renderThread.get())
+        const std::lock_guard lock { nativeHandleMutex };
+
+        jassert (hasInitialised);
+
+        // has the context already attached?
+        jassert (surface.get() == EGL_NO_SURFACE && context.get() == EGL_NO_CONTEXT);
+
+        const auto window = getNativeWindow();
+
+        if (window == nullptr)
         {
-            if (! pool->contains (cachedImage))
-            {
-                cachedImage->resume();
-                cachedImage->context.triggerRepaint();
-            }
+            // failed to get a pointer to the native window so bail out
+            jassertfalse;
+            return;
         }
+
+        // create the surface
+        surface.reset (eglCreateWindowSurface (display, config, window.get(), nullptr));
+        jassert (surface.get() != EGL_NO_SURFACE);
+
+        // create the OpenGL context
+        EGLint contextAttribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+        context.reset (eglCreateContext (display, config, EGL_NO_CONTEXT, contextAttribs));
+        jassert (context.get() != EGL_NO_CONTEXT);
     }
-}
 
-void OpenGLContext::NativeContext::surfaceDestroyed (jobject holder)
-{
-    ignoreUnused (holder);
-
-    // unlike the name suggests this will be called just before the
-    // surface is destroyed. We need to pause the render thread.
-    if (auto* cachedImage = CachedImage::get (component))
+    if (auto* cached = CachedImage::get (component))
     {
-        cachedImage->pause();
-
-        if (auto* threadPool = cachedImage->renderThread.get())
-            threadPool->waitForJobToFinish (cachedImage, -1);
+        cached->resume();
+        cached->triggerRepaint();
     }
 }
+
+void OpenGLContext::NativeContext::surfaceDestroyed (LocalRef<jobject>)
+{
+    if (auto* cached = CachedImage::get (component))
+        cached->pause();
+
+    {
+        const std::lock_guard lock { nativeHandleMutex };
+
+        context.reset (EGL_NO_CONTEXT);
+        surface.reset (EGL_NO_SURFACE);
+    }
+}
+
 #endif
 
 } // namespace juce

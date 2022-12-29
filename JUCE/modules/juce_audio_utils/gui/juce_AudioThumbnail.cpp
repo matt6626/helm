@@ -2,17 +2,16 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
 
-   By using JUCE, you agree to the terms of both the JUCE 5 End-User License
-   Agreement and JUCE 5 Privacy Policy (both updated and effective as of the
-   27th April 2017).
+   By using JUCE, you agree to the terms of both the JUCE 7 End-User License
+   Agreement and JUCE Privacy Policy.
 
-   End User License Agreement: www.juce.com/juce-5-licence
-   Privacy Policy: www.juce.com/juce-5-privacy-policy
+   End User License Agreement: www.juce.com/juce-7-licence
+   Privacy Policy: www.juce.com/juce-privacy-policy
 
    Or: You may also use this code under the terms of the GPL v3 (see
    www.gnu.org/licenses).
@@ -84,6 +83,66 @@ private:
     int8 values[2];
 };
 
+
+//==============================================================================
+template <typename T>
+class AudioBufferReader  : public AudioFormatReader
+{
+public:
+    AudioBufferReader (const AudioBuffer<T>* bufferIn, double rate)
+        : AudioFormatReader (nullptr, "AudioBuffer"), buffer (bufferIn)
+    {
+        sampleRate = rate;
+        bitsPerSample = 32;
+        lengthInSamples = buffer->getNumSamples();
+        numChannels = (unsigned int) buffer->getNumChannels();
+        usesFloatingPointData = std::is_floating_point_v<T>;
+    }
+
+    bool readSamples (int* const* destChannels,
+                      int numDestChannels,
+                      int startOffsetInDestBuffer,
+                      int64 startSampleInFile,
+                      int numSamples) override
+    {
+        clearSamplesBeyondAvailableLength (destChannels, numDestChannels, startOffsetInDestBuffer,
+                                           startSampleInFile, numSamples, lengthInSamples);
+
+        const auto numAvailableSamples = (int) ((int64) buffer->getNumSamples() - startSampleInFile);
+        const auto numSamplesToCopy = std::clamp (numAvailableSamples, 0, numSamples);
+
+        if (numSamplesToCopy == 0)
+            return true;
+
+        for (int i = 0; i < numDestChannels; ++i)
+        {
+            if (void* targetChannel = destChannels[i])
+            {
+                const auto dest = DestType (targetChannel) + startOffsetInDestBuffer;
+
+                if (i < buffer->getNumChannels())
+                    dest.convertSamples (SourceType (buffer->getReadPointer (i) + startSampleInFile), numSamplesToCopy);
+                else
+                    dest.clearSamples (numSamples);
+            }
+        }
+
+        return true;
+    }
+
+private:
+    using SourceNumericalType =
+        std::conditional_t<std::is_same_v<T, int>, AudioData::Int32,
+                           std::conditional_t<std::is_same_v<T, float>, AudioData::Float32, void>>;
+
+    using DestinationNumericalType = std::conditional_t<std::is_floating_point_v<T>, AudioData::Float32, AudioData::Int32>;
+
+    using DestType   = AudioData::Pointer<DestinationNumericalType, AudioData::LittleEndian, AudioData::NonInterleaved, AudioData::NonConst>;
+    using SourceType = AudioData::Pointer<SourceNumericalType,      AudioData::LittleEndian, AudioData::NonInterleaved, AudioData::Const>;
+
+    const AudioBuffer<T>* buffer;
+};
+
 //==============================================================================
 class AudioThumbnail::LevelDataSource   : public TimeSliceClient
 {
@@ -98,7 +157,7 @@ public:
     {
     }
 
-    ~LevelDataSource()
+    ~LevelDataSource() override
     {
         owner.cache.getTimeSliceThread().removeTimeSliceClient (this);
     }
@@ -214,13 +273,13 @@ private:
     std::unique_ptr<InputSource> source;
     std::unique_ptr<AudioFormatReader> reader;
     CriticalSection readerLock;
-    uint32 lastReaderUseTime = 0;
+    std::atomic<uint32> lastReaderUseTime { 0 };
 
     void createReader()
     {
         if (reader == nullptr && source != nullptr)
             if (auto* audioFileStream = source->createInputStream())
-                reader.reset (owner.formatManagerToUse.createReaderFor (audioFileStream));
+                reader.reset (owner.formatManagerToUse.createReaderFor (std::unique_ptr<InputStream> (audioFileStream)));
     }
 
     bool readNextBlock()
@@ -642,9 +701,10 @@ void AudioThumbnail::saveTo (OutputStream& output) const
 //==============================================================================
 bool AudioThumbnail::setDataSource (LevelDataSource* newSource)
 {
-    jassert (MessageManager::getInstance()->currentThreadHasLockedMessageManager());
+    JUCE_ASSERT_MESSAGE_MANAGER_IS_LOCKED
 
     numSamplesFinished = 0;
+    auto wasSuccessful = [&] { return sampleRate > 0 && totalSamples > 0; };
 
     if (cache.loadThumb (*this, newSource->hashCode) && isFullyLoaded())
     {
@@ -654,22 +714,22 @@ bool AudioThumbnail::setDataSource (LevelDataSource* newSource)
         source->sampleRate = sampleRate;
         source->numChannels = (unsigned int) numChannels;
         source->numSamplesFinished = numSamplesFinished;
-    }
-    else
-    {
-        source.reset (newSource); // (make sure this isn't done before loadThumb is called)
 
-        const ScopedLock sl (lock);
-        source->initialise (numSamplesFinished);
-
-        totalSamples = source->lengthInSamples;
-        sampleRate = source->sampleRate;
-        numChannels = (int32) source->numChannels;
-
-        createChannels (1 + (int) (totalSamples / samplesPerThumbSample));
+        return wasSuccessful();
     }
 
-    return sampleRate > 0 && totalSamples > 0;
+    source.reset (newSource);
+
+    const ScopedLock sl (lock);
+    source->initialise (numSamplesFinished);
+
+    totalSamples = source->lengthInSamples;
+    sampleRate = source->sampleRate;
+    numChannels = (int32) source->numChannels;
+
+    createChannels (1 + (int) (totalSamples / samplesPerThumbSample));
+
+    return wasSuccessful();
 }
 
 bool AudioThumbnail::setSource (InputSource* const newSource)
@@ -685,6 +745,16 @@ void AudioThumbnail::setReader (AudioFormatReader* newReader, int64 hash)
 
     if (newReader != nullptr)
         setDataSource (new LevelDataSource (*this, newReader, hash));
+}
+
+void AudioThumbnail::setSource (const AudioBuffer<float>* newSource, double rate, int64 hash)
+{
+    setReader (new AudioBufferReader<float> (newSource, rate), hash);
+}
+
+void AudioThumbnail::setSource (const AudioBuffer<int>* newSource, double rate, int64 hash)
+{
+    setReader (new AudioBufferReader<int> (newSource, rate), hash);
 }
 
 int64 AudioThumbnail::getHashCode() const
@@ -732,7 +802,7 @@ void AudioThumbnail::setLevels (const MinMaxValue* const* values, int thumbIndex
     const ScopedLock sl (lock);
 
     for (int i = jmin (numChans, channels.size()); --i >= 0;)
-        channels.getUnchecked(i)->write (values[i], thumbIndex, numValues);
+        channels.getUnchecked (i)->write (values[i], thumbIndex, numValues);
 
     auto start = thumbIndex * (int64) samplesPerThumbSample;
     auto end   = (thumbIndex + numValues) * (int64) samplesPerThumbSample;
@@ -748,26 +818,31 @@ void AudioThumbnail::setLevels (const MinMaxValue* const* values, int thumbIndex
 //==============================================================================
 int AudioThumbnail::getNumChannels() const noexcept
 {
+    const ScopedLock sl (lock);
     return numChannels;
 }
 
 double AudioThumbnail::getTotalLength() const noexcept
 {
-    return sampleRate > 0 ? (totalSamples / sampleRate) : 0;
+    const ScopedLock sl (lock);
+    return sampleRate > 0 ? ((double) totalSamples / sampleRate) : 0.0;
 }
 
 bool AudioThumbnail::isFullyLoaded() const noexcept
 {
+    const ScopedLock sl (lock);
     return numSamplesFinished >= totalSamples - samplesPerThumbSample;
 }
 
 double AudioThumbnail::getProportionComplete() const noexcept
 {
-    return jlimit (0.0, 1.0, numSamplesFinished / (double) jmax ((int64) 1, totalSamples));
+    const ScopedLock sl (lock);
+    return jlimit (0.0, 1.0, (double) numSamplesFinished / (double) jmax ((int64) 1, totalSamples));
 }
 
 int64 AudioThumbnail::getNumSamplesFinished() const noexcept
 {
+    const ScopedLock sl (lock);
     return numSamplesFinished;
 }
 
@@ -779,7 +854,7 @@ float AudioThumbnail::getApproximatePeak() const
     for (auto* c : channels)
         peak = jmax (peak, c->getPeak());
 
-    return jlimit (0, 127, peak) / 127.0f;
+    return (float) jlimit (0, 127, peak) / 127.0f;
 }
 
 void AudioThumbnail::getApproximateMinMax (double startTime, double endTime, int channelIndex,

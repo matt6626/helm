@@ -2,7 +2,7 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
@@ -50,7 +50,7 @@ namespace juce
     "goodbye" = "au revoir"
     @endcode
 
-    If the strings need to contain a quote character, they can use '\"' instead, and
+    If the strings need to contain a quote character, they can use `\"` instead, and
     if the first non-whitespace character on a line isn't a quote, then it's ignored,
     (you can use this to add comments).
 
@@ -90,7 +90,7 @@ public:
     LocalisedStrings& operator= (const LocalisedStrings&);
 
     /** Destructor. */
-    ~LocalisedStrings();
+    ~LocalisedStrings() = default;
 
     //==============================================================================
     /** Selects the current set of mappings to be used by the system.
@@ -161,7 +161,7 @@ public:
         countries: fr be mc ch lu
         @endcode
 
-        The country codes are supposed to be 2-character ISO complient codes.
+        The country codes are supposed to be 2-character ISO compliant codes.
     */
     const StringArray& getCountryCodes() const            { return countryCodes; }
 
@@ -191,7 +191,6 @@ private:
     StringArray countryCodes;
     StringPairArray translations;
     std::unique_ptr<LocalisedStrings> fallback;
-    friend struct ContainerDeletePolicy<LocalisedStrings>;
 
     void loadFromText (const String&, bool ignoreCase);
 

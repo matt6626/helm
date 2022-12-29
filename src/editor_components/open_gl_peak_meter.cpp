@@ -53,18 +53,18 @@ void OpenGLPeakMeter::resized() {
 
 void OpenGLPeakMeter::init(OpenGLContext& open_gl_context) {
   open_gl_context.extensions.glGenBuffers(1, &vertex_buffer_);
-  open_gl_context.extensions.glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_);
+  open_gl_context.extensions.glBindBuffer(juce::gl::GL_ARRAY_BUFFER, vertex_buffer_);
 
   GLsizeiptr vert_size = static_cast<GLsizeiptr>(static_cast<size_t>(8 * sizeof(float)));
-  open_gl_context.extensions.glBufferData(GL_ARRAY_BUFFER, vert_size,
-                                          position_vertices_, GL_STATIC_DRAW);
+  open_gl_context.extensions.glBufferData(juce::gl::GL_ARRAY_BUFFER, vert_size,
+                                          position_vertices_, juce::gl::GL_STATIC_DRAW);
 
   open_gl_context.extensions.glGenBuffers(1, &triangle_buffer_);
-  open_gl_context.extensions.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, triangle_buffer_);
+    open_gl_context.extensions.glBindBuffer(juce::gl::GL_ELEMENT_ARRAY_BUFFER, triangle_buffer_);
 
   GLsizeiptr tri_size = static_cast<GLsizeiptr>(static_cast<size_t>(6 * sizeof(float)));
-  open_gl_context.extensions.glBufferData(GL_ELEMENT_ARRAY_BUFFER, tri_size,
-                                          position_triangles_, GL_STATIC_DRAW);
+  open_gl_context.extensions.glBufferData(juce::gl::GL_ELEMENT_ARRAY_BUFFER, tri_size,
+                                          position_triangles_, juce::gl::GL_STATIC_DRAW);
 
   const char* vertex_shader = Shaders::getShader(Shaders::kGainMeterVertex);
   const char* fragment_shader = Shaders::getShader(Shaders::kGainMeterFragment);
@@ -91,7 +91,7 @@ void OpenGLPeakMeter::updateVertices() {
 }
 
 void OpenGLPeakMeter::render(OpenGLContext& open_gl_context, bool animate) {
-  MOPO_ASSERT(glGetError() == GL_NO_ERROR);
+  MOPO_ASSERT(juce::gl::glGetError() == juce::gl::GL_NO_ERROR);
 
   if (!animate || peak_output_ == nullptr)
     return;
@@ -99,28 +99,28 @@ void OpenGLPeakMeter::render(OpenGLContext& open_gl_context, bool animate) {
   updateVertices();
   setViewPort(open_gl_context);
 
-  glEnable(GL_BLEND);
-  glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+  juce::gl::glEnable(juce::gl::GL_BLEND);
+  juce::gl::glBlendFunc(juce::gl::GL_ONE, juce::gl::GL_ONE_MINUS_SRC_ALPHA);
 
   shader_->use();
 
-  open_gl_context.extensions.glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_);
+  open_gl_context.extensions.glBindBuffer(juce::gl::GL_ARRAY_BUFFER, vertex_buffer_);
   GLsizeiptr vert_size = static_cast<GLsizeiptr>(static_cast<size_t>(8 * sizeof(float)));
-  open_gl_context.extensions.glBufferData(GL_ARRAY_BUFFER, vert_size,
-                                          position_vertices_, GL_STATIC_DRAW);
+  open_gl_context.extensions.glBufferData(juce::gl::GL_ARRAY_BUFFER, vert_size,
+                                            position_vertices_, juce::gl::GL_STATIC_DRAW);
 
-  open_gl_context.extensions.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, triangle_buffer_);
+  open_gl_context.extensions.glBindBuffer(juce::gl::GL_ELEMENT_ARRAY_BUFFER, triangle_buffer_);
 
-  open_gl_context.extensions.glVertexAttribPointer(position_->attributeID, 2, GL_FLOAT,
-                                                   GL_FALSE, 2 * sizeof(float), 0);
+  open_gl_context.extensions.glVertexAttribPointer(position_->attributeID, 2, juce::gl::GL_FLOAT,
+                                                     juce::gl::GL_FALSE, 2 * sizeof(float), 0);
   open_gl_context.extensions.glEnableVertexAttribArray(position_->attributeID);
 
-  glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+  juce::gl::glDrawElements(juce::gl::GL_TRIANGLES, 6, juce::gl::GL_UNSIGNED_INT, 0);
 
-  open_gl_context.extensions.glBindBuffer(GL_ARRAY_BUFFER, 0);
-  open_gl_context.extensions.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+  open_gl_context.extensions.glBindBuffer(juce::gl::GL_ARRAY_BUFFER, 0);
+  open_gl_context.extensions.glBindBuffer(juce::gl::GL_ELEMENT_ARRAY_BUFFER, 0);
   
-  MOPO_ASSERT(glGetError() == GL_NO_ERROR);
+  MOPO_ASSERT(juce::gl::glGetError() == juce::gl::GL_NO_ERROR);
 }
 
 void OpenGLPeakMeter::destroy(OpenGLContext& open_gl_context) {

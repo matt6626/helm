@@ -2,17 +2,16 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
 
-   By using JUCE, you agree to the terms of both the JUCE 5 End-User License
-   Agreement and JUCE 5 Privacy Policy (both updated and effective as of the
-   27th April 2017).
+   By using JUCE, you agree to the terms of both the JUCE 7 End-User License
+   Agreement and JUCE Privacy Policy.
 
-   End User License Agreement: www.juce.com/juce-5-licence
-   Privacy Policy: www.juce.com/juce-5-privacy-policy
+   End User License Agreement: www.juce.com/juce-7-licence
+   Privacy Policy: www.juce.com/juce-privacy-policy
 
    Or: You may also use this code under the terms of the GPL v3 (see
    www.gnu.org/licenses).
@@ -27,6 +26,98 @@
 namespace juce
 {
 
+//==============================================================================
+class CodeEditorComponent::CodeEditorAccessibilityHandler  : public AccessibilityHandler
+{
+public:
+    explicit CodeEditorAccessibilityHandler (CodeEditorComponent& codeEditorComponentToWrap)
+        : AccessibilityHandler (codeEditorComponentToWrap,
+                                codeEditorComponentToWrap.isReadOnly() ? AccessibilityRole::staticText
+                                                                       : AccessibilityRole::editableText,
+                                {},
+                                { std::make_unique<CodeEditorComponentTextInterface> (codeEditorComponentToWrap) })
+    {
+    }
+
+private:
+    class CodeEditorComponentTextInterface  : public AccessibilityTextInterface
+    {
+    public:
+        explicit CodeEditorComponentTextInterface (CodeEditorComponent& codeEditorComponentToWrap)
+            : codeEditorComponent (codeEditorComponentToWrap)
+        {
+        }
+
+        bool isDisplayingProtectedText() const override
+        {
+            return false;
+        }
+
+        bool isReadOnly() const override
+        {
+            return codeEditorComponent.isReadOnly();
+        }
+
+        int getTotalNumCharacters() const override
+        {
+            return codeEditorComponent.document.getAllContent().length();
+        }
+
+        Range<int> getSelection() const override
+        {
+            return { codeEditorComponent.selectionStart.getPosition(),
+                     codeEditorComponent.selectionEnd.getPosition() };
+        }
+
+        void setSelection (Range<int> r) override
+        {
+            codeEditorComponent.setHighlightedRegion (r);
+        }
+
+        String getText (Range<int> r) const override
+        {
+            auto& doc = codeEditorComponent.document;
+
+            return doc.getTextBetween (CodeDocument::Position (doc, r.getStart()),
+                                       CodeDocument::Position (doc, r.getEnd()));
+        }
+
+        void setText (const String& newText) override
+        {
+            codeEditorComponent.document.replaceAllContent (newText);
+        }
+
+        int getTextInsertionOffset() const override
+        {
+            return codeEditorComponent.caretPos.getPosition();
+        }
+
+        RectangleList<int> getTextBounds (Range<int> textRange) const override
+        {
+            const auto localRects = codeEditorComponent.getTextBounds (textRange);
+
+            RectangleList<int> globalRects;
+
+            for (auto r : localRects)
+                globalRects.add (codeEditorComponent.localAreaToGlobal (r));
+
+            return globalRects;
+        }
+
+        int getOffsetAtPoint (Point<int> point) const override
+        {
+            return codeEditorComponent.getPositionAt (point.x, point.y).getPosition();
+        }
+
+    private:
+        CodeEditorComponent& codeEditorComponent;
+    };
+
+    //==============================================================================
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CodeEditorAccessibilityHandler)
+};
+
+//==============================================================================
 class CodeEditorComponent::CodeEditorLine
 {
 public:
@@ -83,11 +174,23 @@ public:
         return true;
     }
 
-    void getHighlightArea (RectangleList<float>& area, float x, int y, int lineH, float characterWidth) const
+    Optional<Rectangle<float>> getHighlightArea (float x, int y, int lineH, float characterWidth) const
     {
-        if (highlightColumnStart < highlightColumnEnd)
-            area.add (Rectangle<float> (x + highlightColumnStart * characterWidth - 1.0f, y - 0.5f,
-                                        (highlightColumnEnd - highlightColumnStart) * characterWidth + 1.5f, lineH + 1.0f));
+        return getHighlightArea (x, y, lineH, characterWidth, { highlightColumnStart, highlightColumnEnd });
+    }
+
+    Optional<Rectangle<float>> getHighlightArea (float x,
+                                                 int y,
+                                                 int lineH,
+                                                 float characterWidth,
+                                                 Range<int> highlightColumns) const
+    {
+        if (highlightColumns.isEmpty())
+            return {};
+
+        return Rectangle<float> (x + (float) highlightColumns.getStart() * characterWidth - 1.0f, (float) y - 0.5f,
+                                 (float) (highlightColumns.getEnd() - highlightColumns.getStart()) * characterWidth + 1.5f, (float) lineH + 1.0f);
+
     }
 
     void draw (CodeEditorComponent& owner, Graphics& g, const Font& fontToUse,
@@ -101,7 +204,7 @@ public:
 
         for (auto& token : tokens)
         {
-            const float tokenX = x + column * characterWidth;
+            const float tokenX = x + (float) column * characterWidth;
             if (tokenX > rightClip)
                 break;
 
@@ -109,7 +212,7 @@ public:
             column += token.length;
         }
 
-        as.draw (g, { x, (float) y, column * characterWidth + 10.0f, (float) lineH });
+        as.draw (g, { x, (float) y, (float) column * characterWidth + 10.0f, (float) lineH });
     }
 
 private:
@@ -302,7 +405,7 @@ public:
                                          lastNumLines - editor.firstLineOnScreen);
 
         auto lineNumberFont = editor.getFont().withHeight (jmin (13.0f, lineHeightFloat * 0.8f));
-        auto w = getWidth() - 2.0f;
+        auto w = (float) getWidth() - 2.0f;
         GlyphArrangement ga;
 
         for (int i = firstLineToDraw; i < lastLineToDraw; ++i)
@@ -349,9 +452,6 @@ CodeEditorComponent::CodeEditorComponent (CodeDocument& doc, CodeTokeniser* cons
     setMouseCursor (MouseCursor::IBeamCursor);
     setWantsKeyboardFocus (true);
 
-    caret.reset (getLookAndFeel().createCaretComponent (this));
-    addAndMakeVisible (caret.get());
-
     addAndMakeVisible (verticalScrollBar);
     verticalScrollBar.setSingleStepSize (1.0);
 
@@ -370,6 +470,8 @@ CodeEditorComponent::CodeEditorComponent (CodeDocument& doc, CodeTokeniser* cons
     verticalScrollBar.addListener (pimpl.get());
     horizontalScrollBar.addListener (pimpl.get());
     document.addListener (pimpl.get());
+
+    lookAndFeelChanged();
 }
 
 CodeEditorComponent::~CodeEditorComponent()
@@ -404,11 +506,6 @@ void CodeEditorComponent::setTemporaryUnderlining (const Array<Range<int>>&)
     jassertfalse; // TODO Windows IME not yet supported for this comp..
 }
 
-Rectangle<int> CodeEditorComponent::getCaretRectangle()
-{
-    return getLocalArea (caret.get(), caret->getLocalBounds());
-}
-
 void CodeEditorComponent::setLineNumbersShown (const bool shouldBeShown)
 {
     if (showLineNumbers != shouldBeShown)
@@ -436,6 +533,8 @@ void CodeEditorComponent::setReadOnly (bool b) noexcept
             removeChildComponent (caret.get());
         else
             addAndMakeVisible (caret.get());
+
+        invalidateAccessibilityHandler();
     }
 }
 
@@ -444,7 +543,7 @@ void CodeEditorComponent::resized()
 {
     auto visibleWidth = getWidth() - scrollbarThickness - getGutterSize();
     linesOnScreen   = jmax (1, (getHeight() - scrollbarThickness) / lineHeight);
-    columnsOnScreen = jmax (1, (int) (visibleWidth / charWidth));
+    columnsOnScreen = jmax (1, (int) ((float) visibleWidth / charWidth));
     lines.clear();
     rebuildLineTokens();
     updateCaretPosition();
@@ -464,22 +563,26 @@ void CodeEditorComponent::paint (Graphics& g)
 {
     g.fillAll (findColour (CodeEditorComponent::backgroundColourId));
 
-    auto gutterSize = getGutterSize();
-    g.reduceClipRegion (gutterSize, 0, verticalScrollBar.getX() - gutterSize, horizontalScrollBar.getY());
+    const auto gutterSize = getGutterSize();
+    const auto bottom = horizontalScrollBar.isVisible() ? horizontalScrollBar.getY() : getHeight();
+    const auto right  = verticalScrollBar.isVisible()   ? verticalScrollBar.getX()   : getWidth();
+
+    g.reduceClipRegion (gutterSize, 0, right - gutterSize, bottom);
 
     g.setFont (font);
 
-    auto clip = g.getClipBounds();
-    auto firstLineToDraw = jmax (0, clip.getY() / lineHeight);
-    auto lastLineToDraw  = jmin (lines.size(), clip.getBottom() / lineHeight + 1);
-    auto x = (float) (gutterSize - xOffset * charWidth);
-    auto rightClip = (float) clip.getRight();
+    const auto clip = g.getClipBounds();
+    const auto firstLineToDraw = jmax (0, clip.getY() / lineHeight);
+    const auto lastLineToDraw  = jmin (lines.size(), clip.getBottom() / lineHeight + 1);
+    const auto x = (float) (gutterSize - xOffset * charWidth);
+    const auto rightClip = (float) clip.getRight();
 
     {
         RectangleList<float> highlightArea;
 
         for (int i = firstLineToDraw; i < lastLineToDraw; ++i)
-            lines.getUnchecked(i)->getHighlightArea (highlightArea, x, lineHeight * i, lineHeight, charWidth);
+            if (const auto area = lines.getUnchecked(i)->getHighlightArea (x, lineHeight * i, lineHeight, charWidth))
+                highlightArea.add (*area);
 
         g.setColour (findColour (CodeEditorComponent::highlightColourId));
         g.fillRectList (highlightArea);
@@ -550,9 +653,7 @@ void CodeEditorComponent::codeDocumentChanged (const int startIndex, const int e
     const CodeDocument::Position affectedTextStart (document, startIndex);
     const CodeDocument::Position affectedTextEnd (document, endIndex);
 
-    clearCachedIterators (affectedTextStart.getLineNumber());
-
-    rebuildLineTokensAsync();
+    retokenise (startIndex, endIndex);
 
     updateCaretPosition();
     columnToTryToMaintain = -1;
@@ -569,10 +670,26 @@ void CodeEditorComponent::codeDocumentChanged (const int startIndex, const int e
     updateScrollBars();
 }
 
+void CodeEditorComponent::retokenise (int startIndex, int endIndex)
+{
+    const CodeDocument::Position affectedTextStart (document, startIndex);
+    juce::ignoreUnused (endIndex); // Leave room for more efficient impl in future.
+
+    clearCachedIterators (affectedTextStart.getLineNumber());
+
+    rebuildLineTokensAsync();
+}
+
 //==============================================================================
 void CodeEditorComponent::updateCaretPosition()
 {
-    caret->setCaretPosition (getCharacterBounds (getCaretPos()));
+    if (caret != nullptr)
+    {
+        caret->setCaretPosition (getCharacterBounds (getCaretPos()));
+
+        if (auto* handler = getAccessibilityHandler())
+            handler->notifyAccessibilityEvent (AccessibilityEvent::textSelectionChanged);
+    }
 }
 
 void CodeEditorComponent::moveCaretTo (const CodeDocument::Position& newPos, const bool highlighting)
@@ -585,37 +702,35 @@ void CodeEditorComponent::moveCaretTo (const CodeDocument::Position& newPos, con
     {
         if (dragType == notDragging)
         {
-            if (std::abs (caretPos.getPosition() - selectionStart.getPosition())
-                  < std::abs (caretPos.getPosition() - selectionEnd.getPosition()))
-                dragType = draggingSelectionStart;
-            else
-                dragType = draggingSelectionEnd;
+            auto oldCaretPos = caretPos.getPosition();
+            auto isStart = std::abs (oldCaretPos - selectionStart.getPosition())
+                            < std::abs (oldCaretPos - selectionEnd.getPosition());
+
+            dragType = isStart ? draggingSelectionStart : draggingSelectionEnd;
         }
 
         if (dragType == draggingSelectionStart)
         {
-            selectionStart = caretPos;
-
-            if (selectionEnd.getPosition() < selectionStart.getPosition())
+            if (selectionEnd.getPosition() < caretPos.getPosition())
             {
-                auto temp = selectionStart;
-                selectionStart = selectionEnd;
-                selectionEnd = temp;
-
+                setSelection (selectionEnd, caretPos);
                 dragType = draggingSelectionEnd;
+            }
+            else
+            {
+                setSelection (caretPos, selectionEnd);
             }
         }
         else
         {
-            selectionEnd = caretPos;
-
-            if (selectionEnd.getPosition() < selectionStart.getPosition())
+            if (caretPos.getPosition() < selectionStart.getPosition())
             {
-                auto temp = selectionStart;
-                selectionStart = selectionEnd;
-                selectionEnd = temp;
-
+                setSelection (caretPos, selectionStart);
                 dragType = draggingSelectionStart;
+            }
+            else
+            {
+                setSelection (selectionStart, caretPos);
             }
         }
 
@@ -629,6 +744,10 @@ void CodeEditorComponent::moveCaretTo (const CodeDocument::Position& newPos, con
     updateCaretPosition();
     scrollToKeepCaretOnScreen();
     updateScrollBars();
+    caretPositionMoved();
+
+    if (auto* handler = getAccessibilityHandler())
+        handler->notifyAccessibilityEvent (AccessibilityEvent::textChanged);
 
     if (appCommandManager != nullptr && selectionWasActive != isHighlightActive())
         appCommandManager->commandStatusChanged();
@@ -639,8 +758,7 @@ void CodeEditorComponent::deselectAll()
     if (isHighlightActive())
         rebuildLineTokensAsync();
 
-    selectionStart = caretPos;
-    selectionEnd = caretPos;
+    setSelection (caretPos, caretPos);
     dragType = notDragging;
 }
 
@@ -726,19 +844,50 @@ void CodeEditorComponent::scrollToKeepCaretOnScreen()
 
 Rectangle<int> CodeEditorComponent::getCharacterBounds (const CodeDocument::Position& pos) const
 {
-    return { roundToInt ((getGutterSize() - xOffset * charWidth) + indexToColumn (pos.getLineNumber(), pos.getIndexInLine()) * charWidth),
+    return { roundToInt ((getGutterSize() - xOffset * charWidth) + (float) indexToColumn (pos.getLineNumber(), pos.getIndexInLine()) * charWidth),
              (pos.getLineNumber() - firstLineOnScreen) * lineHeight,
              roundToInt (charWidth),
              lineHeight };
 }
 
-CodeDocument::Position CodeEditorComponent::getPositionAt (int x, int y)
+CodeDocument::Position CodeEditorComponent::getPositionAt (int x, int y) const
 {
     const int line = y / lineHeight + firstLineOnScreen;
     const int column = roundToInt ((x - (getGutterSize() - xOffset * charWidth)) / charWidth);
     const int index = columnToIndex (line, column);
 
     return CodeDocument::Position (document, line, index);
+}
+
+int CodeEditorComponent::getCharIndexForPoint (Point<int> point) const
+{
+    return getPositionAt (point.x, point.y).getPosition();
+}
+
+RectangleList<int> CodeEditorComponent::getTextBounds (Range<int> textRange) const
+{
+    RectangleList<int> localRects;
+
+    const CodeDocument::Position startPosition (document, textRange.getStart());
+    const CodeDocument::Position endPosition   (document, textRange.getEnd());
+
+    for (int line = startPosition.getLineNumber(); line <= endPosition.getLineNumber(); ++line)
+    {
+        const CodeDocument::Position lineStartColumn0 { document, line, 0 };
+
+        const auto lineStart = line == startPosition.getLineNumber() ? lineStartColumn0.movedBy (startPosition.getIndexInLine())
+                                                                     : lineStartColumn0;
+
+        const CodeDocument::Position lineEnd { document, line, line == endPosition.getLineNumber() ? endPosition.getIndexInLine()
+                                                                                                   : document.getLine (line).length() };
+
+        const auto startPos = getCharacterBounds (lineStart).getTopLeft();
+        const auto endPos   = getCharacterBounds (lineEnd)  .getTopLeft();
+
+        localRects.add (startPos.x, startPos.y, jmax (1, endPos.x - startPos.x), getLineHeight());
+    }
+
+    return localRects;
 }
 
 //==============================================================================
@@ -757,6 +906,10 @@ void CodeEditorComponent::insertText (const String& newText)
             document.insertText (caretPos, newText);
 
         scrollToKeepCaretOnScreen();
+        caretPositionMoved();
+
+        if (auto* handler = getAccessibilityHandler())
+            handler->notifyAccessibilityEvent (AccessibilityEvent::textChanged);
     }
 }
 
@@ -850,9 +1003,15 @@ void CodeEditorComponent::indentSelectedLines (const int spacesToAdd)
             }
         }
 
-        selectionStart = oldSelectionStart;
-        selectionEnd = oldSelectionEnd;
-        caretPos = oldCaret;
+        setSelection (oldSelectionStart, oldSelectionEnd);
+
+        if (caretPos != oldCaret)
+        {
+            caretPos = oldCaret;
+
+            if (auto* handler = getAccessibilityHandler())
+                handler->notifyAccessibilityEvent (AccessibilityEvent::textChanged);
+        }
     }
 }
 
@@ -1174,8 +1333,13 @@ bool CodeEditorComponent::isHighlightActive() const noexcept
 
 void CodeEditorComponent::setHighlightedRegion (const Range<int>& newRange)
 {
-    selectRegion (CodeDocument::Position (document, newRange.getStart()),
-                  CodeDocument::Position (document, newRange.getEnd()));
+    if (newRange == getHighlightedRegion())
+        return;
+
+    const auto cursorAtStart = newRange.getEnd() == getHighlightedRegion().getStart()
+                            || newRange.getEnd() == getHighlightedRegion().getEnd();
+    selectRegion (CodeDocument::Position (document, cursorAtStart ? newRange.getEnd() : newRange.getStart()),
+                  CodeDocument::Position (document, cursorAtStart ? newRange.getStart() : newRange.getEnd()));
 }
 
 String CodeEditorComponent::getTextInRange (const Range<int>& range) const
@@ -1221,6 +1385,10 @@ void CodeEditorComponent::handleEscapeKey()
 }
 
 void CodeEditorComponent::editorViewportPositionChanged()
+{
+}
+
+void CodeEditorComponent::caretPositionMoved()
 {
 }
 
@@ -1299,6 +1467,12 @@ bool CodeEditorComponent::perform (const InvocationInfo& info)
     return performCommand (info.commandID);
 }
 
+void CodeEditorComponent::lookAndFeelChanged()
+{
+    caret.reset (getLookAndFeel().createCaretComponent (this));
+    addAndMakeVisible (caret.get());
+}
+
 bool CodeEditorComponent::performCommand (const CommandID commandID)
 {
     switch (commandID)
@@ -1314,6 +1488,20 @@ bool CodeEditorComponent::performCommand (const CommandID commandID)
     }
 
     return true;
+}
+
+void CodeEditorComponent::setSelection (CodeDocument::Position newSelectionStart,
+                                        CodeDocument::Position newSelectionEnd)
+{
+    if (selectionStart != newSelectionStart
+        || selectionEnd != newSelectionEnd)
+    {
+        selectionStart = newSelectionStart;
+        selectionEnd = newSelectionEnd;
+
+        if (auto* handler = getAccessibilityHandler())
+            handler->notifyAccessibilityEvent (AccessibilityEvent::textSelectionChanged);
+    }
 }
 
 //==============================================================================
@@ -1536,7 +1724,7 @@ void CodeEditorComponent::clearCachedIterators (const int firstLineToBeInvalid)
 {
     int i;
     for (i = cachedIterators.size(); --i >= 0;)
-        if (cachedIterators.getUnchecked (i)->getLine() < firstLineToBeInvalid)
+        if (cachedIterators.getUnchecked (i).getLine() < firstLineToBeInvalid)
             break;
 
     cachedIterators.removeRange (jmax (0, i - 1), cachedIterators.size());
@@ -1548,29 +1736,29 @@ void CodeEditorComponent::updateCachedIterators (int maxLineNum)
     const int linesBetweenCachedSources = jmax (10, document.getNumLines() / maxNumCachedPositions);
 
     if (cachedIterators.size() == 0)
-        cachedIterators.add (new CodeDocument::Iterator (document));
+        cachedIterators.add (CodeDocument::Iterator (document));
 
     if (codeTokeniser != nullptr)
     {
         for (;;)
         {
-            auto& last = *cachedIterators.getLast();
+            const auto last = cachedIterators.getLast();
 
             if (last.getLine() >= maxLineNum)
                 break;
 
-            auto* t = new CodeDocument::Iterator (last);
-            cachedIterators.add (t);
+            cachedIterators.add (CodeDocument::Iterator (last));
+            auto& t = cachedIterators.getReference (cachedIterators.size() - 1);
             const int targetLine = jmin (maxLineNum, last.getLine() + linesBetweenCachedSources);
 
             for (;;)
             {
-                codeTokeniser->readNextToken (*t);
+                codeTokeniser->readNextToken (t);
 
-                if (t->getLine() >= targetLine)
+                if (t.getLine() >= targetLine)
                     break;
 
-                if (t->isEOF())
+                if (t.isEOF())
                     return;
             }
         }
@@ -1583,7 +1771,7 @@ void CodeEditorComponent::getIteratorForPosition (int position, CodeDocument::It
     {
         for (int i = cachedIterators.size(); --i >= 0;)
         {
-            auto& t = *cachedIterators.getUnchecked (i);
+            auto& t = cachedIterators.getReference (i);
 
             if (t.getPosition() <= position)
             {
@@ -1647,6 +1835,12 @@ CodeEditorComponent::State::State (const String& s)
 String CodeEditorComponent::State::toString() const
 {
     return String (lastTopLine) + ":" + String (lastCaretPos) + ":" + String (lastSelectionEnd);
+}
+
+//==============================================================================
+std::unique_ptr<AccessibilityHandler> CodeEditorComponent::createAccessibilityHandler()
+{
+    return std::make_unique<CodeEditorAccessibilityHandler> (*this);
 }
 
 } // namespace juce

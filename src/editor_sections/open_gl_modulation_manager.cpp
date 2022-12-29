@@ -201,19 +201,19 @@ void OpenGLModulationManager::modulationDisconnected(mopo::ModulationConnection*
 
 void OpenGLModulationManager::init(OpenGLContext& open_gl_context) {
   open_gl_context.extensions.glGenBuffers(1, &vertex_buffer_);
-  open_gl_context.extensions.glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_);
+    open_gl_context.extensions.glBindBuffer(juce::gl::GL_ARRAY_BUFFER, vertex_buffer_);
 
   int num_meters = slider_model_lookup_.size();
   GLsizeiptr vert_size = static_cast<GLsizeiptr>(num_meters * FLOATS_PER_METER * sizeof(float));
-  open_gl_context.extensions.glBufferData(GL_ARRAY_BUFFER, vert_size,
-                                          vertices_, GL_STATIC_DRAW);
+    open_gl_context.extensions.glBufferData(juce::gl::GL_ARRAY_BUFFER, vert_size,
+                                            vertices_, juce::gl::GL_STATIC_DRAW);
 
   open_gl_context.extensions.glGenBuffers(1, &triangle_buffer_);
-  open_gl_context.extensions.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, triangle_buffer_);
+    open_gl_context.extensions.glBindBuffer(juce::gl::GL_ELEMENT_ARRAY_BUFFER, triangle_buffer_);
 
   GLsizeiptr tri_size = static_cast<GLsizeiptr>(num_meters * INDICES_PER_METER * sizeof(int));
-  open_gl_context.extensions.glBufferData(GL_ELEMENT_ARRAY_BUFFER, tri_size,
-                                          triangles_, GL_STATIC_DRAW);
+    open_gl_context.extensions.glBufferData(juce::gl::GL_ELEMENT_ARRAY_BUFFER, tri_size,
+                                            triangles_, juce::gl::GL_STATIC_DRAW);
 
   const char* vertex_shader = Shaders::getShader(Shaders::kModulationVertex);
   const char* fragment_shader = Shaders::getShader(Shaders::kModulationFragment);
@@ -241,42 +241,42 @@ void OpenGLModulationManager::render(OpenGLContext& open_gl_context, bool animat
       meter.second->updateDrawing();
   }
 
-  glEnable(GL_BLEND);
-  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  juce::gl::glEnable(juce::gl::GL_BLEND);
+  juce::gl::glBlendFunc(juce::gl::GL_SRC_ALPHA, juce::gl::GL_ONE_MINUS_SRC_ALPHA);
   setViewPort(open_gl_context);
 
   shader_->use();
   radius_uniform_->set(0.9f);
 
-  open_gl_context.extensions.glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_);
+    open_gl_context.extensions.glBindBuffer(juce::gl::GL_ARRAY_BUFFER, vertex_buffer_);
 
   int num_meters = slider_model_lookup_.size();
   GLsizeiptr vert_size = static_cast<GLsizeiptr>(num_meters * FLOATS_PER_METER * sizeof(float));
-  open_gl_context.extensions.glBufferData(GL_ARRAY_BUFFER, vert_size,
-                                          vertices_, GL_STATIC_DRAW);
-  open_gl_context.extensions.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, triangle_buffer_);
+    open_gl_context.extensions.glBufferData(juce::gl::GL_ARRAY_BUFFER, vert_size,
+                                            vertices_, juce::gl::GL_STATIC_DRAW);
+    open_gl_context.extensions.glBindBuffer(juce::gl::GL_ELEMENT_ARRAY_BUFFER, triangle_buffer_);
 
   if (position_ != nullptr) {
-    open_gl_context.extensions.glVertexAttribPointer(position_->attributeID, 2, GL_FLOAT,
-                                                     GL_FALSE, 6 * sizeof(float), 0);
+      open_gl_context.extensions.glVertexAttribPointer(position_->attributeID, 2, juce::gl::GL_FLOAT,
+                                                       juce::gl::GL_FALSE, 6 * sizeof(float), 0);
     open_gl_context.extensions.glEnableVertexAttribArray(position_->attributeID);
   }
 
   if (coordinates_ != nullptr) {
-    open_gl_context.extensions.glVertexAttribPointer(coordinates_->attributeID, 2, GL_FLOAT,
-                                                     GL_FALSE, 6 * sizeof(float),
+      open_gl_context.extensions.glVertexAttribPointer(coordinates_->attributeID, 2, juce::gl::GL_FLOAT,
+                                                     juce::gl::GL_FALSE, 6 * sizeof(float),
                                                      (GLvoid*)(2 * sizeof(float)));
     open_gl_context.extensions.glEnableVertexAttribArray(coordinates_->attributeID);
   }
 
   if (range_ != nullptr) {
-    open_gl_context.extensions.glVertexAttribPointer(range_->attributeID, 2, GL_FLOAT,
-                                                     GL_FALSE, 6 * sizeof(float),
+      open_gl_context.extensions.glVertexAttribPointer(range_->attributeID, 2, juce::gl::GL_FLOAT,
+                                                       juce::gl::GL_FALSE, 6 * sizeof(float),
                                                      (GLvoid*)(4 * sizeof(float)));
     open_gl_context.extensions.glEnableVertexAttribArray(range_->attributeID);
   }
 
-  glDrawElements(GL_TRIANGLES, num_meters * INDICES_PER_METER, GL_UNSIGNED_INT, 0);
+  juce::gl::glDrawElements(juce::gl::GL_TRIANGLES, num_meters * INDICES_PER_METER, juce::gl::GL_UNSIGNED_INT, 0);
 
   if (position_ != nullptr)
     open_gl_context.extensions.glDisableVertexAttribArray(position_->attributeID);
@@ -287,8 +287,8 @@ void OpenGLModulationManager::render(OpenGLContext& open_gl_context, bool animat
   if (range_ != nullptr)
     open_gl_context.extensions.glDisableVertexAttribArray(range_->attributeID);
 
-  open_gl_context.extensions.glBindBuffer(GL_ARRAY_BUFFER, 0);
-  open_gl_context.extensions.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+  open_gl_context.extensions.glBindBuffer(juce::gl::GL_ARRAY_BUFFER, 0);
+  open_gl_context.extensions.glBindBuffer(juce::gl::GL_ELEMENT_ARRAY_BUFFER, 0);
 }
 
 void OpenGLModulationManager::destroy(OpenGLContext& open_gl_context) {

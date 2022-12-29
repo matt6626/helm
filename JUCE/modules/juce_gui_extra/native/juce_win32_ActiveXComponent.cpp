@@ -2,17 +2,16 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
 
-   By using JUCE, you agree to the terms of both the JUCE 5 End-User License
-   Agreement and JUCE 5 Privacy Policy (both updated and effective as of the
-   27th April 2017).
+   By using JUCE, you agree to the terms of both the JUCE 7 End-User License
+   Agreement and JUCE Privacy Policy.
 
-   End User License Agreement: www.juce.com/juce-5-licence
-   Privacy Policy: www.juce.com/juce-5-privacy-policy
+   End User License Agreement: www.juce.com/juce-7-licence
+   Privacy Policy: www.juce.com/juce-privacy-policy
 
    Or: You may also use this code under the terms of the GPL v3 (see
    www.gnu.org/licenses).
@@ -108,14 +107,14 @@ namespace ActiveXHelpers
 
         JUCE_COMRESULT GetWindowContext (LPOLEINPLACEFRAME* lplpFrame, LPOLEINPLACEUIWINDOW* lplpDoc, LPRECT, LPRECT, LPOLEINPLACEFRAMEINFO lpFrameInfo)
         {
-            /* Note: if you call AddRef on the frame here, then some types of object (e.g. web browser control) cause leaks..
+            /* Note: If you call AddRef on the frame here, then some types of object (e.g. web browser control) cause leaks..
                If you don't call AddRef then others crash (e.g. QuickTime).. Bit of a catch-22, so letting it leak is probably preferable.
             */
             if (lplpFrame != nullptr) { frame->AddRef(); *lplpFrame = frame; }
             if (lplpDoc != nullptr)   *lplpDoc = nullptr;
             lpFrameInfo->fMDIApp = FALSE;
             lpFrameInfo->hwndFrame = window;
-            lpFrameInfo->haccel = 0;
+            lpFrameInfo->haccel = nullptr;
             lpFrameInfo->cAccelEntries = 0;
             return S_OK;
         }
@@ -148,18 +147,34 @@ namespace ActiveXHelpers
         ~JuceIOleClientSite()
         {
             inplaceSite->Release();
+
+            if (dispatchEventHandler != nullptr)
+            {
+                dispatchEventHandler->Release();
+                dispatchEventHandler = nullptr;
+            }
         }
 
         JUCE_COMRESULT QueryInterface (REFIID type, void** result)
         {
+            JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wlanguage-extension-token")
+
             if (type == __uuidof (IOleInPlaceSite))
             {
                 inplaceSite->AddRef();
                 *result = static_cast<IOleInPlaceSite*> (inplaceSite);
                 return S_OK;
             }
+            else if (type == __uuidof(IDispatch) && dispatchEventHandler != nullptr)
+            {
+                dispatchEventHandler->AddRef();
+                *result = dispatchEventHandler;
+                return S_OK;
+            }
 
             return ComBaseClassHelper <IOleClientSite>::QueryInterface (type, result);
+
+            JUCE_END_IGNORE_WARNINGS_GCC_LIKE
         }
 
         JUCE_COMRESULT SaveObject()                                  { return E_NOTIMPL; }
@@ -177,14 +192,40 @@ namespace ActiveXHelpers
             return S_FALSE;
         }
 
+        void setEventHandler (void* eventHandler)
+        {
+            IDispatch* newEventHandler = nullptr;
+
+            if (eventHandler != nullptr)
+            {
+                JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wlanguage-extension-token")
+
+                auto iidIDispatch = __uuidof (IDispatch);
+
+                if (static_cast<IUnknown*>(eventHandler)->QueryInterface (iidIDispatch, (void**) &newEventHandler) != S_OK
+                    || newEventHandler == nullptr)
+                    return;
+
+               JUCE_END_IGNORE_WARNINGS_GCC_LIKE
+            }
+
+            if (dispatchEventHandler != nullptr)
+                dispatchEventHandler->Release();
+
+            dispatchEventHandler = newEventHandler;
+        }
+
         JuceIOleInPlaceSite* inplaceSite;
+        IDispatch* dispatchEventHandler = nullptr;
     };
 
     //==============================================================================
     static Array<ActiveXControlComponent*> activeXComps;
 
-    static inline HWND getHWND (const ActiveXControlComponent* const component)
+    static HWND getHWND (const ActiveXControlComponent* const component)
     {
+        JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wlanguage-extension-token")
+
         HWND hwnd = {};
         const IID iid = __uuidof (IOleWindow);
 
@@ -195,9 +236,11 @@ namespace ActiveXHelpers
         }
 
         return hwnd;
+
+        JUCE_END_IGNORE_WARNINGS_GCC_LIKE
     }
 
-    static inline void offerActiveXMouseEventToPeer (ComponentPeer* peer, HWND hwnd, UINT message, LPARAM lParam)
+    static void offerActiveXMouseEventToPeer (ComponentPeer* peer, HWND hwnd, UINT message, LPARAM lParam)
     {
         switch (message)
         {
@@ -217,8 +260,8 @@ namespace ActiveXHelpers
                                         { (float) (GET_X_LPARAM (lParam) + activeXRect.left - peerRect.left),
                                           (float) (GET_Y_LPARAM (lParam) + activeXRect.top  - peerRect.top) },
                                         ComponentPeer::getCurrentModifiersRealtime(),
-                                        MouseInputSource::invalidPressure,
-                                        MouseInputSource::invalidOrientation,
+                                        MouseInputSource::defaultPressure,
+                                        MouseInputSource::defaultOrientation,
                                         getMouseEventTime());
                 break;
             }
@@ -230,7 +273,8 @@ namespace ActiveXHelpers
 }
 
 //==============================================================================
-class ActiveXControlComponent::Pimpl  : public ComponentMovementWatcher
+class ActiveXControlComponent::Pimpl  : public ComponentMovementWatcher,
+                                        public ComponentPeer::ScaleFactorListener
 {
 public:
     Pimpl (HWND hwnd, ActiveXControlComponent& activeXComp)
@@ -241,8 +285,13 @@ public:
     {
     }
 
-    ~Pimpl()
+    ~Pimpl() override
     {
+        // If the wndproc of the ActiveX HWND isn't set back to it's original
+        // wndproc, then clientSite will leak when control is released
+        if (controlHWND != nullptr)
+            SetWindowLongPtr ((HWND) controlHWND, GWLP_WNDPROC, (LONG_PTR) originalWndProc);
+
         if (control != nullptr)
         {
             control->Close (OLECLOSE_NOSAVE);
@@ -251,36 +300,61 @@ public:
 
         clientSite->Release();
         storage->Release();
+
+        if (currentPeer != nullptr)
+            currentPeer->removeScaleFactorListener (this);
     }
 
     void setControlBounds (Rectangle<int> newBounds) const
     {
-        if (controlHWND != 0)
+        if (controlHWND != nullptr)
+        {
+            if (auto* peer = owner.getTopLevelComponent()->getPeer())
+                newBounds = (newBounds.toDouble() * peer->getPlatformScaleFactor()).toNearestInt();
+
             MoveWindow (controlHWND, newBounds.getX(), newBounds.getY(), newBounds.getWidth(), newBounds.getHeight(), TRUE);
+        }
     }
 
     void setControlVisible (bool shouldBeVisible) const
     {
-        if (controlHWND != 0)
+        if (controlHWND != nullptr)
             ShowWindow (controlHWND, shouldBeVisible ? SW_SHOWNA : SW_HIDE);
     }
 
     //==============================================================================
+    using ComponentMovementWatcher::componentMovedOrResized;
+
     void componentMovedOrResized (bool /*wasMoved*/, bool /*wasResized*/) override
     {
         if (auto* peer = owner.getTopLevelComponent()->getPeer())
-            setControlBounds (peer->getAreaCoveredBy(owner));
+            setControlBounds (peer->getAreaCoveredBy (owner));
     }
 
     void componentPeerChanged() override
     {
+        if (currentPeer != nullptr)
+            currentPeer->removeScaleFactorListener (this);
+
         componentMovedOrResized (true, true);
+
+        currentPeer = owner.getTopLevelComponent()->getPeer();
+
+        if (currentPeer != nullptr)
+            currentPeer->addScaleFactorListener (this);
     }
+
+    using ComponentMovementWatcher::componentVisibilityChanged;
 
     void componentVisibilityChanged() override
     {
         setControlVisible (owner.isShowing());
         componentPeerChanged();
+    }
+
+    void nativeScaleFactorChanged (double /*newScaleFactor*/) override
+    {
+        componentMovedOrResized (true, true);
     }
 
     // intercepts events going to an activeX control, so we can sneakily use the mouse events
@@ -326,11 +400,12 @@ public:
     }
 
     ActiveXControlComponent& owner;
+    ComponentPeer* currentPeer = nullptr;
     HWND controlHWND = {};
     IStorage* storage = nullptr;
     ActiveXHelpers::JuceIOleClientSite* clientSite = nullptr;
     IOleObject* control = nullptr;
-    WNDPROC originalWndProc = 0;
+    WNDPROC originalWndProc = nullptr;
 };
 
 //==============================================================================
@@ -362,13 +437,17 @@ bool ActiveXControlComponent::createControl (const void* controlIID)
 
         std::unique_ptr<Pimpl> newControl (new Pimpl (hwnd, *this));
 
-        HRESULT hr = OleCreate (*(const IID*) controlIID, __uuidof (IOleObject), 1 /*OLERENDER_DRAW*/, 0,
+        JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wlanguage-extension-token")
+
+        HRESULT hr = OleCreate (*(const IID*) controlIID, __uuidof (IOleObject), 1 /*OLERENDER_DRAW*/, nullptr,
                                 newControl->clientSite, newControl->storage,
                                 (void**) &(newControl->control));
 
+        JUCE_END_IGNORE_WARNINGS_GCC_LIKE
+
         if (hr == S_OK)
         {
-            newControl->control->SetHostNames (L"JUCE", 0);
+            newControl->control->SetHostNames (L"JUCE", nullptr);
 
             if (OleSetContainedObject (newControl->control, TRUE) == S_OK)
             {
@@ -378,12 +457,12 @@ bool ActiveXControlComponent::createControl (const void* controlIID)
                 rect.right  = controlBounds.getRight();
                 rect.bottom = controlBounds.getBottom();
 
-                if (newControl->control->DoVerb (OLEIVERB_SHOW, 0, newControl->clientSite, 0, hwnd, &rect) == S_OK)
+                if (newControl->control->DoVerb (OLEIVERB_SHOW, nullptr, newControl->clientSite, 0, hwnd, &rect) == S_OK)
                 {
                     control.reset (newControl.release());
                     control->controlHWND = ActiveXHelpers::getHWND (this);
 
-                    if (control->controlHWND != 0)
+                    if (control->controlHWND != nullptr)
                     {
                         control->setControlBounds (controlBounds);
 
@@ -447,6 +526,13 @@ intptr_t ActiveXControlComponent::offerEventToActiveXControlStatic (void* ptr)
     return S_FALSE;
 }
 
+void ActiveXControlComponent::setEventHandler (void* eventHandler)
+{
+    if (control->clientSite != nullptr)
+        control->clientSite->setEventHandler (eventHandler);
+}
+
+LRESULT juce_offerEventToActiveXControl (::MSG& msg);
 LRESULT juce_offerEventToActiveXControl (::MSG& msg)
 {
     if (msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST)

@@ -2,17 +2,16 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
 
-   By using JUCE, you agree to the terms of both the JUCE 5 End-User License
-   Agreement and JUCE 5 Privacy Policy (both updated and effective as of the
-   27th April 2017).
+   By using JUCE, you agree to the terms of both the JUCE 7 End-User License
+   Agreement and JUCE Privacy Policy.
 
-   End User License Agreement: www.juce.com/juce-5-licence
-   Privacy Policy: www.juce.com/juce-5-privacy-policy
+   End User License Agreement: www.juce.com/juce-7-licence
+   Privacy Policy: www.juce.com/juce-privacy-policy
 
    Or: You may also use this code under the terms of the GPL v3 (see
    www.gnu.org/licenses).
@@ -27,9 +26,23 @@
 namespace juce
 {
 
+#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD, CALLBACK) \
+  METHOD (getItemCount, "getItemCount", "()I") \
+  METHOD (getItemAt,    "getItemAt",    "(I)Landroid/content/ClipData$Item;")
+
+DECLARE_JNI_CLASS (ClipData, "android/content/ClipData")
+#undef JNI_CLASS_MEMBERS
+
+#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD, CALLBACK) \
+  METHOD (getUri, "getUri", "()Landroid/net/Uri;")
+
+DECLARE_JNI_CLASS (ClipDataItem, "android/content/ClipData$Item")
+#undef JNI_CLASS_MEMBERS
+
 class FileChooser::Native     : public FileChooser::Pimpl
 {
 public:
+    //==============================================================================
     Native (FileChooser& fileChooser, int flags)    : owner (fileChooser)
     {
         if (currentFileChooser == nullptr)
@@ -37,9 +50,10 @@ public:
             currentFileChooser = this;
             auto* env = getEnv();
 
-            auto sdkVersion = env->CallStaticIntMethod (JuceAppActivity, JuceAppActivity.getAndroidSDKVersion);
+            auto sdkVersion         = getAndroidSDKVersion();
             auto saveMode           = ((flags & FileBrowserComponent::saveMode) != 0);
             auto selectsDirectories = ((flags & FileBrowserComponent::canSelectDirectories) != 0);
+            auto canSelectMultiple  = ((flags & FileBrowserComponent::canSelectMultipleItems) != 0);
 
             // You cannot save a directory
             jassert (! (saveMode && selectsDirectories));
@@ -64,8 +78,8 @@ public:
                                                      : "android.intent.action.GET_CONTENT")));
 
 
-            intent = GlobalRef (env->NewObject (AndroidIntent, AndroidIntent.constructWithString,
-                                                javaString (action).get()));
+            intent = GlobalRef (LocalRef<jobject> (env->NewObject (AndroidIntent, AndroidIntent.constructWithString,
+                                                                   javaString (action).get())));
 
             if (owner.startingFile != File())
             {
@@ -85,6 +99,13 @@ public:
                                            uri.get());
             }
 
+            if (canSelectMultiple && sdkVersion >= 18)
+            {
+                env->CallObjectMethod (intent.get(),
+                                       AndroidIntent.putExtraBool,
+                                       javaString ("android.intent.extra.ALLOW_MULTIPLE").get(),
+                                       true);
+            }
 
             if (! selectsDirectories)
             {
@@ -133,8 +154,9 @@ public:
             jassertfalse; // there can only be a single file chooser
     }
 
-    ~Native()
+    ~Native() override
     {
+        masterReference.clear();
         currentFileChooser = nullptr;
     }
 
@@ -146,33 +168,63 @@ public:
 
     void launch() override
     {
+        auto* env = getEnv();
+
         if (currentFileChooser != nullptr)
-            android.activity.callVoidMethod (JuceAppActivity.startActivityForResult, intent.get(), /*READ_REQUEST_CODE*/ 42);
+        {
+            startAndroidActivityForResult (LocalRef<jobject> (env->NewLocalRef (intent.get())), /*READ_REQUEST_CODE*/ 42,
+                                           [myself = WeakReference<Native> { this }] (int requestCode, int resultCode, LocalRef<jobject> intentData) mutable
+                                           {
+                                               if (myself != nullptr)
+                                                   myself->onActivityResult (requestCode, resultCode, intentData);
+                                           });
+        }
         else
+        {
             jassertfalse; // There is already a file chooser running
+        }
     }
 
-    void completed (int resultCode, jobject intentData)
+    void onActivityResult (int /*requestCode*/, int resultCode, const LocalRef<jobject>& intentData)
     {
         currentFileChooser = nullptr;
         auto* env = getEnv();
 
-        Array<URL> chosenURLs;
-
-        if (resultCode == /*Activity.RESULT_OK*/ -1 && intentData != nullptr)
+        const auto getUrls = [&]() -> Array<URL>
         {
-            LocalRef<jobject> uri (env->CallObjectMethod (intentData, AndroidIntent.getData));
+            if (resultCode != /*Activity.RESULT_OK*/ -1 || intentData == nullptr)
+                return {};
 
-            if (uri != nullptr)
+            Array<URL> chosenURLs;
+
+            const auto addUrl = [env, &chosenURLs] (jobject uri)
             {
-                auto jStr = (jstring) env->CallObjectMethod (uri, JavaObject.toString);
-
-                if (jStr != nullptr)
+                if (auto jStr = (jstring) env->CallObjectMethod (uri, JavaObject.toString))
                     chosenURLs.add (URL (juceString (env, jStr)));
-            }
-        }
+            };
 
-        owner.finished (chosenURLs);
+            if (LocalRef<jobject> clipData { env->CallObjectMethod (intentData.get(), AndroidIntent.getClipData) })
+            {
+                const auto count = env->CallIntMethod (clipData.get(), ClipData.getItemCount);
+
+                for (auto i = 0; i < count; ++i)
+                {
+                    if (LocalRef<jobject> item { env->CallObjectMethod (clipData.get(), ClipData.getItemAt, i) })
+                    {
+                        if (LocalRef<jobject> itemUri { env->CallObjectMethod (item.get(), ClipDataItem.getUri) })
+                            addUrl (itemUri.get());
+                    }
+                }
+            }
+            else if (LocalRef<jobject> uri { env->CallObjectMethod (intentData.get(), AndroidIntent.getData )})
+            {
+                addUrl (uri.get());
+            }
+
+            return chosenURLs;
+        };
+
+        owner.finished (getUrls());
     }
 
     static Native* currentFileChooser;
@@ -188,7 +240,7 @@ public:
             {
                 auto extension = wildcard.fromLastOccurrenceOf (".", false, false);
 
-                result.addArray (getMimeTypesForFileExtension (extension));
+                result.addArray (MimeTypeTable::getMimeTypesForFileExtension (extension));
             }
         }
 
@@ -197,23 +249,23 @@ public:
     }
 
 private:
+    JUCE_DECLARE_WEAK_REFERENCEABLE (Native)
+
     FileChooser& owner;
     GlobalRef intent;
 };
 
 FileChooser::Native* FileChooser::Native::currentFileChooser = nullptr;
 
-void juce_fileChooserCompleted (int resultCode, void* intentData)
+std::shared_ptr<FileChooser::Pimpl> FileChooser::showPlatformDialog (FileChooser& owner, int flags,
+                                                                     FilePreviewComponent*)
 {
-    if (FileChooser::Native::currentFileChooser != nullptr)
-        FileChooser::Native::currentFileChooser->completed (resultCode, (jobject) intentData);
-}
+    if (FileChooser::Native::currentFileChooser == nullptr)
+        return std::make_shared<FileChooser::Native> (owner, flags);
 
-
-FileChooser::Pimpl* FileChooser::showPlatformDialog (FileChooser& owner, int flags,
-                                                     FilePreviewComponent*)
-{
-    return new FileChooser::Native (owner, flags);
+    // there can only be one file chooser on Android at a once
+    jassertfalse;
+    return nullptr;
 }
 
 bool FileChooser::isPlatformDialogAvailable()
@@ -223,6 +275,12 @@ bool FileChooser::isPlatformDialogAvailable()
    #else
     return true;
    #endif
+}
+
+void FileChooser::registerCustomMimeTypeForFileExtension (const String& mimeType,
+                                                          const String& fileExtension)
+{
+    MimeTypeTable::registerCustomMimeTypeForFileExtension (mimeType, fileExtension);
 }
 
 } // namespace juce

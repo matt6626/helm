@@ -2,17 +2,16 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
 
-   By using JUCE, you agree to the terms of both the JUCE 5 End-User License
-   Agreement and JUCE 5 Privacy Policy (both updated and effective as of the
-   27th April 2017).
+   By using JUCE, you agree to the terms of both the JUCE 7 End-User License
+   Agreement and JUCE Privacy Policy.
 
-   End User License Agreement: www.juce.com/juce-5-licence
-   Privacy Policy: www.juce.com/juce-5-privacy-policy
+   End User License Agreement: www.juce.com/juce-7-licence
+   Privacy Policy: www.juce.com/juce-privacy-policy
 
    Or: You may also use this code under the terms of the GPL v3 (see
    www.gnu.org/licenses).
@@ -43,8 +42,10 @@ namespace SIMDInternal
     template <> struct MaskTypeFor <std::complex<float>>    { using type = uint32_t; };
     template <> struct MaskTypeFor <std::complex<double>>   { using type = uint64_t; };
 
-    template <typename Primitive> struct PrimitiveType                           { using type = Primitive; };
-    template <typename Primitive> struct PrimitiveType<std::complex<Primitive>>  { using type = Primitive; };
+    template <typename Primitive> using MaskType = typename MaskTypeFor<Primitive>::type;
+
+    template <typename Primitive> struct PrimitiveType                           { using type = std::remove_cv_t<Primitive>; };
+    template <typename Primitive> struct PrimitiveType<std::complex<Primitive>>  { using type = std::remove_cv_t<Primitive>; };
 
     template <int n>    struct Log2Helper    { enum { value = Log2Helper<n/2>::value + 1 }; };
     template <>         struct Log2Helper<1> { enum { value = 0 }; };
@@ -61,10 +62,10 @@ struct SIMDFallbackOps
 {
     static constexpr size_t n    =  sizeof (vSIMDType) / sizeof (ScalarType);
     static constexpr size_t mask = (sizeof (vSIMDType) / sizeof (ScalarType)) - 1;
-    static constexpr size_t bits = SIMDInternal::Log2Helper<n>::value;
+    static constexpr size_t bits = SIMDInternal::Log2Helper<(int) n>::value;
 
     // helper types
-    using MaskType = typename SIMDInternal::MaskTypeFor<ScalarType>::type;
+    using MaskType = SIMDInternal::MaskType<ScalarType>;
     union UnionType     { vSIMDType v; ScalarType s[n]; };
     union UnionMaskType { vSIMDType v; MaskType   m[n]; };
 
@@ -115,9 +116,19 @@ struct SIMDFallbackOps
         auto retval = static_cast<ScalarType> (0);
 
         for (size_t i = 0; i < n; ++i)
-            retval += a.s[i];
+            retval = static_cast<ScalarType> (retval + a.s[i]);
 
         return retval;
+    }
+
+    static forcedinline vSIMDType truncate (vSIMDType av) noexcept
+    {
+        UnionType a {av};
+
+        for (size_t i = 0; i < n; ++i)
+            a.s[i] = static_cast<ScalarType> (static_cast<int> (a.s[i]));
+
+        return a.v;
     }
 
     static forcedinline vSIMDType multiplyAdd (vSIMDType av, vSIMDType bv, vSIMDType cv) noexcept

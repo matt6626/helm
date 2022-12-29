@@ -2,17 +2,16 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
 
-   By using JUCE, you agree to the terms of both the JUCE 5 End-User License
-   Agreement and JUCE 5 Privacy Policy (both updated and effective as of the
-   27th April 2017).
+   By using JUCE, you agree to the terms of both the JUCE 7 End-User License
+   Agreement and JUCE Privacy Policy.
 
-   End User License Agreement: www.juce.com/juce-5-licence
-   Privacy Policy: www.juce.com/juce-5-privacy-policy
+   End User License Agreement: www.juce.com/juce-7-licence
+   Privacy Policy: www.juce.com/juce-privacy-policy
 
    Or: You may also use this code under the terms of the GPL v3 (see
    www.gnu.org/licenses).
@@ -29,9 +28,20 @@ namespace juce
 
 extern XContext windowHandleXContext;
 
+struct XFreeDeleter
+{
+    void operator() (void* ptr) const
+    {
+        if (ptr != nullptr)
+            X11Symbols::getInstance()->xFree (ptr);
+    }
+};
+
+template <typename Data>
+std::unique_ptr<Data, XFreeDeleter> makeXFreePtr (Data* raw) { return std::unique_ptr<Data, XFreeDeleter> (raw); }
+
 //==============================================================================
 // Defined juce_linux_Windowing.cpp
-Rectangle<int> juce_LinuxScaledToPhysicalBounds (ComponentPeer*, Rectangle<int>);
 void juce_LinuxAddRepaintListener (ComponentPeer*, Component* dummy);
 void juce_LinuxRemoveRepaintListener (ComponentPeer*, Component* dummy);
 
@@ -59,101 +69,143 @@ public:
     NativeContext (Component& comp,
                    const OpenGLPixelFormat& cPixelFormat,
                    void* shareContext,
-                   bool /*useMultisampling*/,
+                   bool useMultisamplingIn,
                    OpenGLVersion)
         : component (comp), contextToShareWith (shareContext), dummy (*this)
     {
-        display = XWindowSystem::getInstance()->displayRef();
+        display = XWindowSystem::getInstance()->getDisplay();
 
-        ScopedXLock xlock (display);
-        XSync (display, False);
+        XWindowSystemUtilities::ScopedXLock xLock;
 
-        GLint attribs[] =
+        X11Symbols::getInstance()->xSync (display, False);
+
+        const std::vector<GLint> optionalAttribs
         {
-            GLX_RGBA,
-            GLX_DOUBLEBUFFER,
-            GLX_RED_SIZE,         cPixelFormat.redBits,
-            GLX_GREEN_SIZE,       cPixelFormat.greenBits,
-            GLX_BLUE_SIZE,        cPixelFormat.blueBits,
-            GLX_ALPHA_SIZE,       cPixelFormat.alphaBits,
-            GLX_DEPTH_SIZE,       cPixelFormat.depthBufferBits,
-            GLX_STENCIL_SIZE,     cPixelFormat.stencilBufferBits,
-            GLX_ACCUM_RED_SIZE,   cPixelFormat.accumulationBufferRedBits,
-            GLX_ACCUM_GREEN_SIZE, cPixelFormat.accumulationBufferGreenBits,
-            GLX_ACCUM_BLUE_SIZE,  cPixelFormat.accumulationBufferBlueBits,
-            GLX_ACCUM_ALPHA_SIZE, cPixelFormat.accumulationBufferAlphaBits,
-            None
+            GLX_SAMPLE_BUFFERS, useMultisamplingIn ? 1 : 0,
+            GLX_SAMPLES,        cPixelFormat.multisamplingLevel
         };
 
-        bestVisual = glXChooseVisual (display, DefaultScreen (display), attribs);
-        if (bestVisual == nullptr)
+        if (! tryChooseVisual (cPixelFormat, optionalAttribs) && ! tryChooseVisual (cPixelFormat, {}))
             return;
 
         auto* peer = component.getPeer();
         jassert (peer != nullptr);
 
         auto windowH = (Window) peer->getNativeHandle();
-        auto colourMap = XCreateColormap (display, windowH, bestVisual->visual, AllocNone);
+        auto visual = glXGetVisualFromFBConfig (display, *bestConfig);
+        auto colourMap = X11Symbols::getInstance()->xCreateColormap (display, windowH, visual->visual, AllocNone);
 
         XSetWindowAttributes swa;
         swa.colormap = colourMap;
         swa.border_pixel = 0;
-        swa.event_mask = ExposureMask | StructureNotifyMask;
+        swa.event_mask = embeddedWindowEventMask;
 
-        auto glBounds = component.getTopLevelComponent()
-                           ->getLocalArea (&component, component.getLocalBounds());
+        auto glBounds = component.getTopLevelComponent()->getLocalArea (&component, component.getLocalBounds());
 
-        glBounds = juce_LinuxScaledToPhysicalBounds (peer, glBounds);
+        glBounds = Desktop::getInstance().getDisplays().logicalToPhysical (glBounds);
 
-        embeddedWindow = XCreateWindow (display, windowH,
-                                        glBounds.getX(), glBounds.getY(),
-                                        (unsigned int) jmax (1, glBounds.getWidth()),
-                                        (unsigned int) jmax (1, glBounds.getHeight()),
-                                        0, bestVisual->depth,
-                                        InputOutput,
-                                        bestVisual->visual,
-                                        CWBorderPixel | CWColormap | CWEventMask,
-                                        &swa);
+        embeddedWindow = X11Symbols::getInstance()->xCreateWindow (display, windowH,
+                                                                   glBounds.getX(), glBounds.getY(),
+                                                                   (unsigned int) jmax (1, glBounds.getWidth()),
+                                                                   (unsigned int) jmax (1, glBounds.getHeight()),
+                                                                   0, visual->depth,
+                                                                   InputOutput,
+                                                                   visual->visual,
+                                                                   CWBorderPixel | CWColormap | CWEventMask,
+                                                                   &swa);
 
-        XSaveContext (display, (XID) embeddedWindow, windowHandleXContext, (XPointer) peer);
+        X11Symbols::getInstance()->xSaveContext (display, (XID) embeddedWindow, windowHandleXContext, (XPointer) peer);
 
-        XMapWindow (display, embeddedWindow);
-        XFreeColormap (display, colourMap);
+        X11Symbols::getInstance()->xMapWindow (display, embeddedWindow);
+        X11Symbols::getInstance()->xFreeColormap (display, colourMap);
 
-        XSync (display, False);
+        X11Symbols::getInstance()->xSync (display, False);
 
         juce_LinuxAddRepaintListener (peer, &dummy);
     }
 
     ~NativeContext()
     {
-        juce_LinuxRemoveRepaintListener (component.getPeer(), &dummy);
-
-        if (embeddedWindow != 0)
+        if (auto* peer = component.getPeer())
         {
-            ScopedXLock xlock (display);
-            XUnmapWindow (display, embeddedWindow);
-            XDestroyWindow (display, embeddedWindow);
+            juce_LinuxRemoveRepaintListener (peer, &dummy);
+
+            if (embeddedWindow != 0)
+            {
+                XWindowSystemUtilities::ScopedXLock xLock;
+
+                X11Symbols::getInstance()->xUnmapWindow (display, embeddedWindow);
+                X11Symbols::getInstance()->xDestroyWindow (display, embeddedWindow);
+                X11Symbols::getInstance()->xSync (display, False);
+
+                XEvent event;
+                while (X11Symbols::getInstance()->xCheckWindowEvent (display,
+                                                                     embeddedWindow,
+                                                                     embeddedWindowEventMask,
+                                                                     &event) == True)
+                {
+                }
+            }
         }
-
-        if (bestVisual != nullptr)
-            XFree (bestVisual);
-
-        XWindowSystem::getInstance()->displayUnref();
     }
 
-    bool initialiseOnRenderThread (OpenGLContext& c)
+    InitResult initialiseOnRenderThread (OpenGLContext& c)
     {
-        ScopedXLock xlock (display);
-        renderContext = glXCreateContext (display, bestVisual, (GLXContext) contextToShareWith, GL_TRUE);
+        XWindowSystemUtilities::ScopedXLock xLock;
+
+        const auto components = [&]() -> Optional<Version>
+        {
+            switch (c.versionRequired)
+            {
+                case OpenGLVersion::openGL3_2: return Version { 3, 2 };
+                case OpenGLVersion::openGL4_1: return Version { 4, 1 };
+                case OpenGLVersion::openGL4_3: return Version { 4, 3 };
+
+                case OpenGLVersion::defaultGLVersion: break;
+            }
+
+            return {};
+        }();
+
+        if (components.hasValue())
+        {
+            using GLXCreateContextAttribsARB = GLXContext (*) (Display*, GLXFBConfig, GLXContext, Bool, const int*);
+
+            if (const auto glXCreateContextAttribsARB = (GLXCreateContextAttribsARB) OpenGLHelpers::getExtensionFunction ("glXCreateContextAttribsARB"))
+            {
+               #if JUCE_DEBUG
+                constexpr auto contextFlags = GLX_CONTEXT_DEBUG_BIT_ARB;
+               #else
+                constexpr auto contextFlags = 0;
+               #endif
+
+                const int attribs[]
+                {
+                    GLX_CONTEXT_MAJOR_VERSION_ARB, components->major,
+                    GLX_CONTEXT_MINOR_VERSION_ARB, components->minor,
+                    GLX_CONTEXT_PROFILE_MASK_ARB,  GLX_CONTEXT_CORE_PROFILE_BIT_ARB,
+                    GLX_CONTEXT_FLAGS_ARB,         contextFlags,
+                    None
+                };
+
+                renderContext = glXCreateContextAttribsARB (display, *bestConfig, (GLXContext) contextToShareWith, GL_TRUE, attribs);
+            }
+        }
+
+        if (renderContext == nullptr)
+            renderContext = glXCreateNewContext (display, *bestConfig, GLX_RGBA_TYPE, (GLXContext) contextToShareWith, GL_TRUE);
+
+        if (renderContext == nullptr)
+            return InitResult::fatal;
+
         c.makeActive();
         context = &c;
-
-        return true;
+        return InitResult::success;
     }
 
     void shutdownOnRenderThread()
     {
+        XWindowSystemUtilities::ScopedXLock xLock;
         context = nullptr;
         deactivateCurrentContext();
         glXDestroyContext (display, renderContext);
@@ -162,36 +214,42 @@ public:
 
     bool makeActive() const noexcept
     {
-        return renderContext != 0
+        XWindowSystemUtilities::ScopedXLock xLock;
+        return renderContext != nullptr
                  && glXMakeCurrent (display, embeddedWindow, renderContext);
     }
 
     bool isActive() const noexcept
     {
-        return glXGetCurrentContext() == renderContext && renderContext != 0;
+        XWindowSystemUtilities::ScopedXLock xLock;
+        return glXGetCurrentContext() == renderContext && renderContext != nullptr;
     }
 
     static void deactivateCurrentContext()
     {
-        ScopedXDisplay xDisplay;
-        glXMakeCurrent (xDisplay.display, None, 0);
+        if (auto* display = XWindowSystem::getInstance()->getDisplay())
+        {
+            XWindowSystemUtilities::ScopedXLock xLock;
+            glXMakeCurrent (display, None, nullptr);
+        }
     }
 
     void swapBuffers()
     {
+        XWindowSystemUtilities::ScopedXLock xLock;
         glXSwapBuffers (display, embeddedWindow);
     }
 
     void updateWindowPosition (Rectangle<int> newBounds)
     {
         bounds = newBounds;
-        auto physicalBounds = juce_LinuxScaledToPhysicalBounds (component.getPeer(), bounds);
+        auto physicalBounds = Desktop::getInstance().getDisplays().logicalToPhysical (bounds);
 
-        ScopedXLock xlock (display);
-        XMoveResizeWindow (display, embeddedWindow,
-                           physicalBounds.getX(), physicalBounds.getY(),
-                           (unsigned int) jmax (1, physicalBounds.getWidth()),
-                           (unsigned int) jmax (1, physicalBounds.getHeight()));
+        XWindowSystemUtilities::ScopedXLock xLock;
+        X11Symbols::getInstance()->xMoveResizeWindow (display, embeddedWindow,
+                                                      physicalBounds.getX(), physicalBounds.getY(),
+                                                      (unsigned int) jmax (1, physicalBounds.getWidth()),
+                                                      (unsigned int) jmax (1, physicalBounds.getHeight()));
     }
 
     bool setSwapInterval (int numFramesPerSwap)
@@ -202,6 +260,7 @@ public:
         if (auto GLXSwapIntervalSGI
               = (PFNGLXSWAPINTERVALSGIPROC) OpenGLHelpers::getExtensionFunction ("glXSwapIntervalSGI"))
         {
+            XWindowSystemUtilities::ScopedXLock xLock;
             swapFrames = numFramesPerSwap;
             GLXSwapIntervalSGI (numFramesPerSwap);
             return true;
@@ -221,22 +280,57 @@ public:
             context->triggerRepaint();
     }
 
-    struct Locker { Locker (NativeContext&) {} };
+    struct Locker
+    {
+        explicit Locker (NativeContext& ctx) : lock (ctx.mutex) {}
+        const ScopedLock lock;
+    };
 
 private:
+    bool tryChooseVisual (const OpenGLPixelFormat& format, const std::vector<GLint>& optionalAttribs)
+    {
+        std::vector<GLint> allAttribs
+        {
+            GLX_RENDER_TYPE,      GLX_RGBA_BIT,
+            GLX_DOUBLEBUFFER,     True,
+            GLX_RED_SIZE,         format.redBits,
+            GLX_GREEN_SIZE,       format.greenBits,
+            GLX_BLUE_SIZE,        format.blueBits,
+            GLX_ALPHA_SIZE,       format.alphaBits,
+            GLX_DEPTH_SIZE,       format.depthBufferBits,
+            GLX_STENCIL_SIZE,     format.stencilBufferBits,
+            GLX_ACCUM_RED_SIZE,   format.accumulationBufferRedBits,
+            GLX_ACCUM_GREEN_SIZE, format.accumulationBufferGreenBits,
+            GLX_ACCUM_BLUE_SIZE,  format.accumulationBufferBlueBits,
+            GLX_ACCUM_ALPHA_SIZE, format.accumulationBufferAlphaBits
+        };
+
+        allAttribs.insert (allAttribs.end(), optionalAttribs.begin(), optionalAttribs.end());
+
+        allAttribs.push_back (None);
+
+        int nElements = 0;
+        bestConfig = makeXFreePtr (glXChooseFBConfig (display, X11Symbols::getInstance()->xDefaultScreen (display), allAttribs.data(), &nElements));
+
+        return nElements != 0 && bestConfig != nullptr;
+    }
+
+    static constexpr int embeddedWindowEventMask = ExposureMask | StructureNotifyMask;
+
+    CriticalSection mutex;
     Component& component;
     GLXContext renderContext = {};
     Window embeddedWindow = {};
 
-    int swapFrames = 0;
+    int swapFrames = 1;
     Rectangle<int> bounds;
-    XVisualInfo* bestVisual = {};
+    std::unique_ptr<GLXFBConfig, XFreeDeleter> bestConfig;
     void* contextToShareWith;
 
-    OpenGLContext* context = {};
+    OpenGLContext* context = nullptr;
     DummyComponent dummy;
 
-    ::Display* display = {};
+    ::Display* display = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NativeContext)
 };
@@ -244,15 +338,8 @@ private:
 //==============================================================================
 bool OpenGLHelpers::isContextActive()
 {
-    ScopedXDisplay xDisplay;
-
-    if (xDisplay.display)
-    {
-        ScopedXLock xlock (xDisplay.display);
-        return glXGetCurrentContext() != 0;
-    }
-
-    return false;
+    XWindowSystemUtilities::ScopedXLock xLock;
+    return glXGetCurrentContext() != nullptr;
 }
 
 } // namespace juce

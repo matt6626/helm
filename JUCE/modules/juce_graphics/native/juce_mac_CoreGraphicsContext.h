@@ -2,17 +2,16 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
 
-   By using JUCE, you agree to the terms of both the JUCE 5 End-User License
-   Agreement and JUCE 5 Privacy Policy (both updated and effective as of the
-   27th April 2017).
+   By using JUCE, you agree to the terms of both the JUCE 7 End-User License
+   Agreement and JUCE Privacy Policy.
 
-   End User License Agreement: www.juce.com/juce-5-licence
-   Privacy Policy: www.juce.com/juce-5-privacy-policy
+   End User License Agreement: www.juce.com/juce-7-licence
+   Privacy Policy: www.juce.com/juce-privacy-policy
 
    Or: You may also use this code under the terms of the GPL v3 (see
    www.gnu.org/licenses).
@@ -27,12 +26,53 @@
 namespace juce
 {
 
+namespace detail
+{
+    struct ColorSpaceDelete
+    {
+        void operator() (CGColorSpaceRef ptr) const noexcept { CGColorSpaceRelease (ptr); }
+    };
+
+    struct ContextDelete
+    {
+        void operator() (CGContextRef ptr) const noexcept { CGContextRelease (ptr); }
+    };
+
+    struct DataProviderDelete
+    {
+        void operator() (CGDataProviderRef ptr) const noexcept { CGDataProviderRelease (ptr); }
+    };
+
+    struct ImageDelete
+    {
+        void operator() (CGImageRef ptr) const noexcept { CGImageRelease (ptr); }
+    };
+
+    struct GradientDelete
+    {
+        void operator() (CGGradientRef ptr) const noexcept { CGGradientRelease (ptr); }
+    };
+
+    struct ColorDelete
+    {
+        void operator() (CGColorRef ptr) const noexcept { CGColorRelease (ptr); }
+    };
+
+    //==============================================================================
+    using ColorSpacePtr = std::unique_ptr<CGColorSpace, ColorSpaceDelete>;
+    using ContextPtr = std::unique_ptr<CGContext, ContextDelete>;
+    using DataProviderPtr = std::unique_ptr<CGDataProvider, DataProviderDelete>;
+    using ImagePtr = std::unique_ptr<CGImage, ImageDelete>;
+    using GradientPtr = std::unique_ptr<CGGradient, GradientDelete>;
+    using ColorPtr = std::unique_ptr<CGColor, ColorDelete>;
+}
+
 //==============================================================================
 class CoreGraphicsContext   : public LowLevelGraphicsContext
 {
 public:
-    CoreGraphicsContext (CGContextRef context, float flipHeight, float targetScale);
-    ~CoreGraphicsContext();
+    CoreGraphicsContext (CGContextRef context, float flipHeight);
+    ~CoreGraphicsContext() override;
 
     //==============================================================================
     bool isVectorDevice() const override         { return false; }
@@ -61,6 +101,7 @@ public:
     void setInterpolationQuality (Graphics::ResamplingQuality) override;
 
     //==============================================================================
+    void fillAll() override;
     void fillRect (const Rectangle<int>&, bool replaceExistingContents) override;
     void fillRect (const Rectangle<float>&) override;
     void fillRectList (const RectangleList<float>&) override;
@@ -75,12 +116,12 @@ public:
     bool drawTextLayout (const AttributedString&, const Rectangle<float>&) override;
 
 private:
-    CGContextRef context;
+    //==============================================================================
+    detail::ContextPtr context;
     const CGFloat flipHeight;
-    float targetScale;
-    CGColorSpaceRef rgbColourSpace, greyColourSpace;
+    detail::ColorSpacePtr rgbColourSpace, greyColourSpace;
     mutable Rectangle<int> lastClipRect;
-    mutable bool lastClipRectIsValid;
+    mutable bool lastClipRectIsValid = false;
 
     struct SavedState
     {
@@ -92,9 +133,10 @@ private:
 
         FillType fillType;
         Font font;
-        CGFontRef fontRef;
-        CGAffineTransform fontTransform;
-        CGGradientRef gradient;
+        CGFontRef fontRef = {};
+        CGAffineTransform textMatrix = CGAffineTransformIdentity,
+                   inverseTextMatrix = CGAffineTransformIdentity;
+        detail::GradientPtr gradient = {};
     };
 
     std::unique_ptr<SavedState> state;

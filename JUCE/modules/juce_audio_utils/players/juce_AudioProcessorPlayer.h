@@ -2,17 +2,16 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
 
-   By using JUCE, you agree to the terms of both the JUCE 5 End-User License
-   Agreement and JUCE 5 Privacy Policy (both updated and effective as of the
-   27th April 2017).
+   By using JUCE, you agree to the terms of both the JUCE 7 End-User License
+   Agreement and JUCE Privacy Policy.
 
-   End User License Agreement: www.juce.com/juce-5-licence
-   Privacy Policy: www.juce.com/juce-5-privacy-policy
+   End User License Agreement: www.juce.com/juce-7-licence
+   Privacy Policy: www.juce.com/juce-privacy-policy
 
    Or: You may also use this code under the terms of the GPL v3 (see
    www.gnu.org/licenses).
@@ -35,7 +34,8 @@ namespace juce
     give it a processor to use by calling setProcessor().
 
     It's also a MidiInputCallback, so you can connect it to both an audio and midi
-    input to send both streams through the processor.
+    input to send both streams through the processor. To set a MidiOutput for the processor,
+    use the setMidiOutput() method.
 
     @see AudioProcessor, AudioProcessorGraph
 
@@ -49,7 +49,7 @@ public:
     AudioProcessorPlayer (bool doDoublePrecisionProcessing = false);
 
     /** Destructor. */
-    virtual ~AudioProcessorPlayer();
+    ~AudioProcessorPlayer() override;
 
     //==============================================================================
     /** Sets the processor that should be played.
@@ -68,23 +68,31 @@ public:
     */
     MidiMessageCollector& getMidiMessageCollector() noexcept        { return messageCollector; }
 
+    /** Sets the MIDI output that should be used, if required.
+
+        The MIDI output will not be deleted or owned by this object. If the MIDI output is
+        deleted, pass a nullptr to this method.
+    */
+    void setMidiOutput (MidiOutput* midiOutputToUse);
+
     /** Switch between double and single floating point precisions processing.
-        The audio IO callbacks will still operate in single floating point
-        precision, however, all internal processing including the
-        AudioProcessor will be processed in double floating point precision if
-        the AudioProcessor supports it (see
-        AudioProcessor::supportsDoublePrecisionProcessing()).
-        Otherwise, the processing will remain single precision irrespective of
-        the parameter doublePrecision. */
+
+        The audio IO callbacks will still operate in single floating point precision,
+        however, all internal processing including the AudioProcessor will be processed in
+        double floating point precision if the AudioProcessor supports it (see
+        AudioProcessor::supportsDoublePrecisionProcessing()). Otherwise, the processing will
+        remain single precision irrespective of the parameter doublePrecision.
+    */
     void setDoublePrecisionProcessing (bool doublePrecision);
 
     /** Returns true if this player processes internally processes the samples with
-        double floating point precision. */
+        double floating point precision.
+    */
     inline bool getDoublePrecisionProcessing() { return isDoublePrecision; }
 
     //==============================================================================
     /** @internal */
-    void audioDeviceIOCallback (const float**, int, float**, int, int) override;
+    void audioDeviceIOCallbackWithContext (const float* const*, int, float* const*, int, int, const AudioIODeviceCallbackContext&) override;
     /** @internal */
     void audioDeviceAboutToStart (AudioIODevice*) override;
     /** @internal */
@@ -93,6 +101,27 @@ public:
     void handleIncomingMidiMessage (MidiInput*, const MidiMessage&) override;
 
 private:
+    struct NumChannels
+    {
+        NumChannels() = default;
+        NumChannels (int numIns, int numOuts) : ins (numIns), outs (numOuts) {}
+
+        explicit NumChannels (const AudioProcessor::BusesLayout& layout)
+            : ins (layout.getNumChannels (true, 0)), outs (layout.getNumChannels (false, 0)) {}
+
+        AudioProcessor::BusesLayout toLayout() const
+        {
+            return { { AudioChannelSet::canonicalChannelSet (ins) },
+                     { AudioChannelSet::canonicalChannelSet (outs) } };
+        }
+
+        int ins = 0, outs = 0;
+    };
+
+    //==============================================================================
+    NumChannels findMostSuitableLayout (const AudioProcessor&) const;
+    void resizeChannels();
+
     //==============================================================================
     AudioProcessor* processor = nullptr;
     CriticalSection lock;
@@ -100,13 +129,15 @@ private:
     int blockSize = 0;
     bool isPrepared = false, isDoublePrecision = false;
 
-    int numInputChans = 0, numOutputChans = 0;
-    HeapBlock<float*> channels;
+    NumChannels deviceChannels, defaultProcessorChannels, actualProcessorChannels;
+    std::vector<float*> channels;
     AudioBuffer<float> tempBuffer;
     AudioBuffer<double> conversionBuffer;
 
     MidiBuffer incomingMidi;
     MidiMessageCollector messageCollector;
+    MidiOutput* midiOutput = nullptr;
+    uint64_t sampleCount = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioProcessorPlayer)
 };

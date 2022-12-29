@@ -2,17 +2,16 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
 
-   By using JUCE, you agree to the terms of both the JUCE 5 End-User License
-   Agreement and JUCE 5 Privacy Policy (both updated and effective as of the
-   27th April 2017).
+   By using JUCE, you agree to the terms of both the JUCE 7 End-User License
+   Agreement and JUCE Privacy Policy.
 
-   End User License Agreement: www.juce.com/juce-5-licence
-   Privacy Policy: www.juce.com/juce-5-privacy-policy
+   End User License Agreement: www.juce.com/juce-7-licence
+   Privacy Policy: www.juce.com/juce-privacy-policy
 
    Or: You may also use this code under the terms of the GPL v3 (see
    www.gnu.org/licenses).
@@ -48,6 +47,11 @@ public:
     */
     void setFramesPerSecond (int framesPerSecond);
 
+    /** You can use this function to synchronise animation updates with the current display's vblank
+        events. When this mode is enabled the value passed to setFramesPerSecond() is ignored.
+    */
+    void setSynchroniseToVBlank (bool syncToVBlank);
+
     /** Called periodically, at the frequency specified by setFramesPerSecond().
         This is a the best place to do things like advancing animation parameters,
         checking the mouse position, etc.
@@ -67,8 +71,13 @@ public:
 
 private:
     //==============================================================================
-    Time lastUpdateTime;
-    int totalUpdates;
+    void updateSync();
+
+    Time lastUpdateTime = Time::getCurrentTime();
+    int totalUpdates = 0;
+    int framesPerSecond = 60;
+    bool useVBlank = false;
+    VBlankAttachment vBlankAttachment;
 
     void timerCallback() override;
 

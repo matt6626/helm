@@ -2,7 +2,7 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
@@ -76,7 +76,7 @@ public:
                                      again when a thread is free. */
     };
 
-    /** Peforms the actual work that this job needs to do.
+    /** Performs the actual work that this job needs to do.
 
         Your subclass must implement this method, in which is does its work.
 
@@ -134,7 +134,7 @@ private:
     friend class ThreadPool;
     String jobName;
     ThreadPool* pool = nullptr;
-    bool shouldStop = false, isActive = false, shouldBeDeleted = false;
+    std::atomic<bool> shouldStop { false }, isActive { false }, shouldBeDeleted { false };
     ListenerList<Thread::Listener, Array<Thread::Listener*, CriticalSection>> listeners;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ThreadPoolJob)
@@ -164,8 +164,9 @@ public:
         @param threadStackSize  the size of the stack of each thread. If this value
                                 is zero then the default stack size of the OS will
                                 be used.
+        @param priority         the desired priority of each thread in the pool.
     */
-    ThreadPool (int numberOfThreads, size_t threadStackSize = 0);
+    ThreadPool (int numberOfThreads, size_t threadStackSize = 0, Thread::Priority priority = Thread::Priority::normal);
 
     /** Creates a thread pool with one thread per CPU core.
         Once you've created a pool, you can give it some jobs by calling addJob().
@@ -191,7 +192,7 @@ public:
     class JUCE_API  JobSelector
     {
     public:
-        virtual ~JobSelector() {}
+        virtual ~JobSelector() = default;
 
         /** Should return true if the specified thread matches your criteria for whatever
             operation that this object is being used for.
@@ -309,21 +310,12 @@ public:
     */
     StringArray getNamesOfAllJobs (bool onlyReturnActiveJobs) const;
 
-    /** Changes the priority of all the threads.
-        This will call Thread::setPriority() for each thread in the pool.
-        May return false if for some reason the priority can't be changed.
-    */
-    bool setThreadPriorities (int newPriority);
-
-
 private:
     //==============================================================================
     Array<ThreadPoolJob*> jobs;
 
     struct ThreadPoolThread;
     friend class ThreadPoolJob;
-    friend struct ThreadPoolThread;
-    friend struct ContainerDeletePolicy<ThreadPoolThread>;
     OwnedArray<ThreadPoolThread> threads;
 
     CriticalSection lock;
@@ -332,7 +324,6 @@ private:
     bool runNextJob (ThreadPoolThread&);
     ThreadPoolJob* pickNextJobToRun();
     void addToDeleteList (OwnedArray<ThreadPoolJob>&, ThreadPoolJob*) const;
-    void createThreads (int numThreads, size_t threadStackSize = 0);
     void stopThreads();
 
     // Note that this method has changed, and no longer has a parameter to indicate

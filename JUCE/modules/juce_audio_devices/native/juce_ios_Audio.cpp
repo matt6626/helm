@@ -2,7 +2,7 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
@@ -20,12 +20,20 @@
   ==============================================================================
 */
 
+#include <juce_audio_basics/native/juce_mac_CoreAudioTimeConversions.h>
+
 namespace juce
 {
 
 class iOSAudioIODevice;
 
-static const char* const iOSAudioDeviceName = "iOS Audio";
+constexpr const char* const iOSAudioDeviceName = "iOS Audio";
+
+#ifndef JUCE_IOS_AUDIO_EXPLICIT_SAMPLERATES
+ #define JUCE_IOS_AUDIO_EXPLICIT_SAMPLERATES
+#endif
+
+constexpr std::initializer_list<double> iOSExplicitSampleRates { JUCE_IOS_AUDIO_EXPLICIT_SAMPLERATES };
 
 //==============================================================================
 struct AudioSessionHolder
@@ -58,6 +66,8 @@ static const char* getRoutingChangeReason (AVAudioSessionRouteChangeReason reaso
     }
 }
 
+JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wmissing-prototypes")
+
 bool getNotificationValueForKey (NSNotification* notification, NSString* key, NSUInteger& value) noexcept
 {
     if (notification != nil)
@@ -76,7 +86,9 @@ bool getNotificationValueForKey (NSNotification* notification, NSString* key, NS
     return false;
 }
 
-} // juce namespace
+JUCE_END_IGNORE_WARNINGS_GCC_LIKE
+
+} // namespace juce
 
 //==============================================================================
 @interface iOSAudioSessionNative  : NSObject
@@ -216,7 +228,7 @@ class iOSAudioIODeviceType  : public AudioIODeviceType,
 {
 public:
     iOSAudioIODeviceType();
-    ~iOSAudioIODeviceType();
+    ~iOSAudioIODeviceType() override;
 
     void scanForDevices() override;
     StringArray getDeviceNames (bool) const override;
@@ -235,14 +247,14 @@ private:
 
     SharedResourcePointer<AudioSessionHolder> sessionHolder;
 
+    JUCE_DECLARE_WEAK_REFERENCEABLE (iOSAudioIODeviceType)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (iOSAudioIODeviceType)
 };
 
 //==============================================================================
-struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
-                                      public AsyncUpdater
+struct iOSAudioIODevice::Pimpl      : public AsyncUpdater
 {
-    Pimpl (iOSAudioIODeviceType& ioDeviceType, iOSAudioIODevice& ioDevice)
+    Pimpl (iOSAudioIODeviceType* ioDeviceType, iOSAudioIODevice& ioDevice)
         : deviceType (ioDeviceType),
           owner (ioDevice)
     {
@@ -255,14 +267,13 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
 
         setAudioSessionActive (true);
         updateHardwareInfo();
-        setAudioSessionActive (false);
-
         channelData.reconfigure ({}, {});
+        setAudioSessionActive (false);
 
         sessionHolder->activeDevices.add (this);
     }
 
-    ~Pimpl()
+    ~Pimpl() override
     {
         sessionHolder->activeDevices.removeFirstMatchingValue (this);
 
@@ -278,7 +289,13 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
        #endif
 
         if (category == AVAudioSessionCategoryPlayAndRecord)
-            options |= (AVAudioSessionCategoryOptionDefaultToSpeaker | AVAudioSessionCategoryOptionAllowBluetooth);
+        {
+            options |= (AVAudioSessionCategoryOptionDefaultToSpeaker
+                      | AVAudioSessionCategoryOptionAllowBluetooth);
+
+            if (@available (iOS 10.0, *))
+                options |= AVAudioSessionCategoryOptionAllowBluetoothA2DP;
+        }
 
         JUCE_NSERROR_CHECK ([[AVAudioSession sharedInstance] setCategory: category
                                                              withOptions: options
@@ -354,6 +371,12 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
     // depending on whether the headphones are plugged in or not!
     void updateAvailableSampleRates()
     {
+        if (iOSExplicitSampleRates.size() != 0)
+        {
+            availableSampleRates = Array<double> (iOSExplicitSampleRates);
+            return;
+        }
+
         availableSampleRates.clear();
 
         AudioUnitRemovePropertyListenerWithUserData (audioUnit,
@@ -405,9 +428,9 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
         JUCE_IOS_AUDIO_LOG ("Sample rate after detecting available sample rates: " << sampleRate);
     }
 
-    void updateHardwareInfo()
+    void updateHardwareInfo (bool forceUpdate = false)
     {
-        if (! hardwareInfoNeedsUpdating.compareAndSetBool (false, true))
+        if (! forceUpdate && ! hardwareInfoNeedsUpdating.compareAndSetBool (false, true))
             return;
 
         JUCE_IOS_AUDIO_LOG ("Updating hardware info");
@@ -415,7 +438,8 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
         updateAvailableSampleRates();
         updateAvailableBufferSizes();
 
-        deviceType.callDeviceChangeListeners();
+        if (deviceType != nullptr)
+            deviceType->callDeviceChangeListeners();
     }
 
     void setTargetSampleRateAndBufferSize()
@@ -451,13 +475,12 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
                             << ", targetSampleRate: " << targetSampleRate
                             << ", targetBufferSize: " << targetBufferSize);
 
-        channelData.reconfigure (requestedInputChannels, requestedOutputChannels);
-
-        setAudioSessionCategory (channelData.areInputChannelsAvailable() ? AVAudioSessionCategoryPlayAndRecord : AVAudioSessionCategoryPlayback);
         setAudioSessionActive (true);
-
+        setAudioSessionCategory (requestedInputChannels > 0 ? AVAudioSessionCategoryPlayAndRecord
+                                                            : AVAudioSessionCategoryPlayback);
+        channelData.reconfigure (requestedInputChannels, requestedOutputChannels);
+        updateHardwareInfo (true);
         setTargetSampleRateAndBufferSize();
-
         fixAudioRouteIfSetToReceiver();
 
         isRunning = true;
@@ -486,11 +509,11 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
         {
             isRunning = false;
 
-            if (audioUnit != 0)
+            if (audioUnit != nullptr)
             {
                 AudioOutputUnitStart (audioUnit);
                 AudioComponentInstanceDispose (audioUnit);
-                audioUnit = 0;
+                audioUnit = nullptr;
             }
 
             setAudioSessionActive (false);
@@ -540,145 +563,159 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
     }
 
     //==============================================================================
-    bool canControlTransport() override                    { return interAppAudioConnected; }
-
-    void transportPlay (bool shouldSartPlaying) override
+    class PlayHead : public AudioPlayHead
     {
-        if (! canControlTransport())
-            return;
+    public:
+        explicit PlayHead (Pimpl& implIn) : impl (implIn) {}
 
-        HostCallbackInfo callbackInfo;
-        fillHostCallbackInfo (callbackInfo);
+        bool canControlTransport() override                    { return canControlTransportImpl(); }
 
-        Boolean hostIsPlaying = NO;
-        OSStatus err = callbackInfo.transportStateProc2 (callbackInfo.hostUserData,
-                                                         &hostIsPlaying,
-                                                         nullptr,
-                                                         nullptr,
-                                                         nullptr,
-                                                         nullptr,
-                                                         nullptr,
-                                                         nullptr);
+        void transportPlay (bool shouldSartPlaying) override
+        {
+            if (! canControlTransport())
+                return;
 
-        ignoreUnused (err);
-        jassert (err == noErr);
+            HostCallbackInfo callbackInfo;
+            impl.fillHostCallbackInfo (callbackInfo);
 
-        if (hostIsPlaying != shouldSartPlaying)
-            handleAudioTransportEvent (kAudioUnitRemoteControlEvent_TogglePlayPause);
-    }
+            Boolean hostIsPlaying = NO;
+            OSStatus err = callbackInfo.transportStateProc2 (callbackInfo.hostUserData,
+                                                             &hostIsPlaying,
+                                                             nullptr,
+                                                             nullptr,
+                                                             nullptr,
+                                                             nullptr,
+                                                             nullptr,
+                                                             nullptr);
 
-    void transportRecord (bool shouldStartRecording) override
-    {
-        if (! canControlTransport())
-            return;
+            ignoreUnused (err);
+            jassert (err == noErr);
 
-        HostCallbackInfo callbackInfo;
-        fillHostCallbackInfo (callbackInfo);
+            if (hostIsPlaying != shouldSartPlaying)
+                impl.handleAudioTransportEvent (kAudioUnitRemoteControlEvent_TogglePlayPause);
+        }
 
-        Boolean hostIsRecording = NO;
-        OSStatus err = callbackInfo.transportStateProc2 (callbackInfo.hostUserData,
-                                                         nullptr,
-                                                         &hostIsRecording,
-                                                         nullptr,
-                                                         nullptr,
-                                                         nullptr,
-                                                         nullptr,
-                                                         nullptr);
-        ignoreUnused (err);
-        jassert (err == noErr);
+        void transportRecord (bool shouldStartRecording) override
+        {
+            if (! canControlTransport())
+                return;
 
-        if (hostIsRecording != shouldStartRecording)
-            handleAudioTransportEvent (kAudioUnitRemoteControlEvent_ToggleRecord);
-    }
+            HostCallbackInfo callbackInfo;
+            impl.fillHostCallbackInfo (callbackInfo);
 
-    void transportRewind() override
-    {
-        if (canControlTransport())
-            handleAudioTransportEvent (kAudioUnitRemoteControlEvent_Rewind);
-    }
+            Boolean hostIsRecording = NO;
+            OSStatus err = callbackInfo.transportStateProc2 (callbackInfo.hostUserData,
+                                                             nullptr,
+                                                             &hostIsRecording,
+                                                             nullptr,
+                                                             nullptr,
+                                                             nullptr,
+                                                             nullptr,
+                                                             nullptr);
+            ignoreUnused (err);
+            jassert (err == noErr);
 
-    bool getCurrentPosition (CurrentPositionInfo& result) override
-    {
-        if (! canControlTransport())
-            return false;
+            if (hostIsRecording != shouldStartRecording)
+                impl.handleAudioTransportEvent (kAudioUnitRemoteControlEvent_ToggleRecord);
+        }
 
-        zerostruct (result);
+        void transportRewind() override
+        {
+            if (canControlTransport())
+                impl.handleAudioTransportEvent (kAudioUnitRemoteControlEvent_Rewind);
+        }
 
-        HostCallbackInfo callbackInfo;
-        fillHostCallbackInfo (callbackInfo);
+        Optional<PositionInfo> getPosition() const override
+        {
+            if (! canControlTransportImpl())
+                return {};
 
-        if (callbackInfo.hostUserData == nullptr)
-            return false;
+            HostCallbackInfo callbackInfo;
+            impl.fillHostCallbackInfo (callbackInfo);
 
-        Boolean hostIsPlaying               = NO;
-        Boolean hostIsRecording             = NO;
-        Float64 hostCurrentSampleInTimeLine = 0;
-        Boolean hostIsCycling               = NO;
-        Float64 hostCycleStartBeat          = 0;
-        Float64 hostCycleEndBeat            = 0;
-        OSStatus err = callbackInfo.transportStateProc2 (callbackInfo.hostUserData,
-                                                         &hostIsPlaying,
-                                                         &hostIsRecording,
-                                                         nullptr,
-                                                         &hostCurrentSampleInTimeLine,
-                                                         &hostIsCycling,
-                                                         &hostCycleStartBeat,
-                                                         &hostCycleEndBeat);
-        if (err == kAUGraphErr_CannotDoInCurrentContext)
-            return false;
+            if (callbackInfo.hostUserData == nullptr)
+                return {};
 
-        jassert (err == noErr);
+            Boolean hostIsPlaying               = NO;
+            Boolean hostIsRecording             = NO;
+            Float64 hostCurrentSampleInTimeLine = 0;
+            Boolean hostIsCycling               = NO;
+            Float64 hostCycleStartBeat          = 0;
+            Float64 hostCycleEndBeat            = 0;
+            OSStatus err = callbackInfo.transportStateProc2 (callbackInfo.hostUserData,
+                                                             &hostIsPlaying,
+                                                             &hostIsRecording,
+                                                             nullptr,
+                                                             &hostCurrentSampleInTimeLine,
+                                                             &hostIsCycling,
+                                                             &hostCycleStartBeat,
+                                                             &hostCycleEndBeat);
+            if (err == kAUGraphErr_CannotDoInCurrentContext)
+                return {};
 
-        result.timeInSamples = (int64) hostCurrentSampleInTimeLine;
-        result.isPlaying     = hostIsPlaying;
-        result.isRecording   = hostIsRecording;
-        result.isLooping     = hostIsCycling;
-        result.ppqLoopStart  = hostCycleStartBeat;
-        result.ppqLoopEnd    = hostCycleEndBeat;
+            jassert (err == noErr);
 
-        result.timeInSeconds = result.timeInSamples / sampleRate;
+            PositionInfo result;
 
-        Float64 hostBeat = 0;
-        Float64 hostTempo = 0;
-        err = callbackInfo.beatAndTempoProc (callbackInfo.hostUserData,
-                                             &hostBeat,
-                                             &hostTempo);
-        jassert (err == noErr);
+            result.setTimeInSamples ((int64) hostCurrentSampleInTimeLine);
+            result.setIsPlaying     (hostIsPlaying);
+            result.setIsRecording   (hostIsRecording);
+            result.setIsLooping     (hostIsCycling);
+            result.setLoopPoints    (LoopPoints { hostCycleStartBeat, hostCycleEndBeat });
+            result.setTimeInSeconds (*result.getTimeInSamples() / impl.sampleRate);
 
-        result.ppqPosition = hostBeat;
-        result.bpm         = hostTempo;
+            Float64 hostBeat = 0;
+            Float64 hostTempo = 0;
+            err = callbackInfo.beatAndTempoProc (callbackInfo.hostUserData,
+                                                 &hostBeat,
+                                                 &hostTempo);
+            jassert (err == noErr);
 
-        Float32 hostTimeSigNumerator = 0;
-        UInt32 hostTimeSigDenominator = 0;
-        Float64 hostCurrentMeasureDownBeat = 0;
-        err = callbackInfo.musicalTimeLocationProc (callbackInfo.hostUserData,
-                                                    nullptr,
-                                                    &hostTimeSigNumerator,
-                                                    &hostTimeSigDenominator,
-                                                    &hostCurrentMeasureDownBeat);
-        jassert (err == noErr);
+            result.setPpqPosition (hostBeat);
+            result.setBpm         (hostTempo);
 
-        result.ppqPositionOfLastBarStart = hostCurrentMeasureDownBeat;
-        result.timeSigNumerator          = (int) hostTimeSigNumerator;
-        result.timeSigDenominator        = (int) hostTimeSigDenominator;
+            Float32 hostTimeSigNumerator = 0;
+            UInt32 hostTimeSigDenominator = 0;
+            Float64 hostCurrentMeasureDownBeat = 0;
+            err = callbackInfo.musicalTimeLocationProc (callbackInfo.hostUserData,
+                                                        nullptr,
+                                                        &hostTimeSigNumerator,
+                                                        &hostTimeSigDenominator,
+                                                        &hostCurrentMeasureDownBeat);
+            jassert (err == noErr);
 
-        result.frameRate = AudioPlayHead::fpsUnknown;
+            result.setPpqPositionOfLastBarStart (hostCurrentMeasureDownBeat);
+            result.setTimeSignature (TimeSignature { (int) hostTimeSigNumerator, (int) hostTimeSigDenominator });
 
-        return true;
-    }
+            result.setFrameRate (AudioPlayHead::fpsUnknown);
+
+            return result;
+        }
+
+    private:
+        bool canControlTransportImpl() const { return impl.interAppAudioConnected; }
+
+        Pimpl& impl;
+    };
 
     //==============================================================================
    #if JUCE_MODULE_AVAILABLE_juce_graphics
+    JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wdeprecated-declarations")
     Image getIcon (int size)
     {
-        if (interAppAudioConnected)
+        if (@available (macCatalyst 14.0, *))
         {
-            UIImage* hostUIImage = AudioOutputUnitGetHostIcon (audioUnit, size);
-            if (hostUIImage != nullptr)
-                return juce_createImageFromUIImage (hostUIImage);
+            if (interAppAudioConnected)
+            {
+                UIImage* hostUIImage = AudioOutputUnitGetHostIcon (audioUnit, size);
+                if (hostUIImage != nullptr)
+                    return juce_createImageFromUIImage (hostUIImage);
+            }
         }
-        return Image();
+
+        return {};
     }
+    JUCE_END_IGNORE_WARNINGS_GCC_LIKE
    #endif
 
     void switchApplication()
@@ -696,11 +733,18 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
                                             &dataSize);
         if (err == noErr)
         {
-           #if (! defined __IPHONE_OS_VERSION_MIN_REQUIRED) || (! defined __IPHONE_10_0) || (__IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_10_0)
-            [[UIApplication sharedApplication] openURL: (NSURL*)hostUrl];
-           #else
-            [[UIApplication sharedApplication] openURL: (NSURL*)hostUrl options: @{} completionHandler: nil];
-           #endif
+            if (@available (iOS 10.0, *))
+            {
+                [[UIApplication sharedApplication] openURL: (NSURL*) hostUrl
+                                                   options: @{}
+                                         completionHandler: nil];
+
+                return;
+            }
+
+            JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wdeprecated-declarations")
+            [[UIApplication sharedApplication] openURL: (NSURL*) hostUrl];
+            JUCE_END_IGNORE_WARNINGS_GCC_LIKE
         }
     }
 
@@ -819,6 +863,9 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
             {
                 AudioOutputUnitStop (audioUnit);
                 setAudioSessionActive (false);
+
+                if (callback != nullptr)
+                    callback->audioDeviceStopped();
             }
         }
     }
@@ -836,9 +883,7 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
         if (useInput)
             err = AudioUnitRender (audioUnit, flags, time, 1, numFrames, data);
 
-        const int numChannels = jmax (channelData.inputs->numHardwareChannels,
-                                      channelData.outputs->numHardwareChannels);
-        const UInt32 totalDataSize = sizeof (short) * (uint32) numChannels * numFrames;
+        const auto channelDataSize = sizeof (float) * numFrames;
 
         const ScopedTryLock stl (callbackLock);
 
@@ -847,49 +892,45 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
             if ((int) numFrames > channelData.getFloatBufferSize())
                 channelData.setFloatBufferSize ((int) numFrames);
 
-            float** inputData  = channelData.audioData.getArrayOfWritePointers();
-            float** outputData = inputData + channelData.inputs->numActiveChannels;
+            float* const* const inputData = channelData.audioData.getArrayOfWritePointers();
+            float* const* const outputData = inputData + channelData.inputs->numActiveChannels;
 
             if (useInput)
             {
-                const auto* inputShortData = (short*) data->mBuffers[0].mData;
-
-                for (UInt32 i = 0; i < numFrames; ++i)
+                for (int c = 0; c < channelData.inputs->numActiveChannels; ++c)
                 {
-                    for (int channel = 0; channel < channelData.inputs->numActiveChannels; ++channel)
-                        inputData[channel][i] = *(inputShortData + channelData.inputs->activeChannelIndicies[channel]) * (1.0f / 32768.0f);
-
-                    inputShortData += numChannels;
+                    auto channelIndex = channelData.inputs->activeChannelIndices[c];
+                    memcpy (inputData[c], (float*) data->mBuffers[channelIndex].mData, channelDataSize);
                 }
             }
             else
             {
-                for (int i = 0; i < channelData.inputs->numActiveChannels; ++i)
-                    zeromem (inputData, sizeof (float) * numFrames);
+                for (int c = 0; c < channelData.inputs->numActiveChannels; ++c)
+                    zeromem (inputData[c], channelDataSize);
             }
 
-            callback->audioDeviceIOCallback ((const float**) inputData,  channelData.inputs ->numActiveChannels,
-                                                             outputData, channelData.outputs->numActiveChannels,
-                                             (int) numFrames);
+            const auto nanos = time != nullptr ? timeConversions.hostTimeToNanos (time->mHostTime) : 0;
 
-            auto* outputShortData = (short*) data->mBuffers[0].mData;
+            callback->audioDeviceIOCallbackWithContext ((const float**) inputData,
+                                                        channelData.inputs ->numActiveChannels,
+                                                        outputData,
+                                                        channelData.outputs->numActiveChannels,
+                                                        (int) numFrames,
+                                                        { (time != nullptr && (time->mFlags & kAudioTimeStampHostTimeValid) != 0) ? &nanos : nullptr });
 
-            zeromem (outputShortData, totalDataSize);
-
-            if (channelData.outputs->numActiveChannels > 0)
+            for (int c = 0; c < channelData.outputs->numActiveChannels; ++c)
             {
-                for (UInt32 i = 0; i < numFrames; ++i)
-                {
-                    for (int channel = 0; channel < channelData.outputs->numActiveChannels; ++channel)
-                        *(outputShortData + channelData.outputs->activeChannelIndicies[channel]) = (short) (outputData[channel][i] * 32767.0f);
-
-                    outputShortData += numChannels;
-                }
+                auto channelIndex = channelData.outputs->activeChannelIndices[c];
+                memcpy (data->mBuffers[channelIndex].mData, outputData[c], channelDataSize);
             }
+
+            for (auto c : channelData.outputs->inactiveChannelIndices)
+                zeromem (data->mBuffers[c].mData, channelDataSize);
         }
         else
         {
-            zeromem (data->mBuffers[0].mData, totalDataSize);
+            for (uint32 c = 0; c < data->mNumberBuffers; ++c)
+                zeromem (data->mBuffers[c].mData, channelDataSize);
         }
 
         return err;
@@ -927,10 +968,10 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
     {
         JUCE_IOS_AUDIO_LOG ("Creating the audio unit");
 
-        if (audioUnit != 0)
+        if (audioUnit != nullptr)
         {
             AudioComponentInstanceDispose (audioUnit);
-            audioUnit = 0;
+            audioUnit = nullptr;
         }
 
         AudioComponentDescription desc;
@@ -940,10 +981,10 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
         desc.componentFlags = 0;
         desc.componentFlagsMask = 0;
 
-        AudioComponent comp = AudioComponentFindNext (0, &desc);
+        AudioComponent comp = AudioComponentFindNext (nullptr, &desc);
         AudioComponentInstanceNew (comp, &audioUnit);
 
-        if (audioUnit == 0)
+        if (audioUnit == nullptr)
             return false;
 
        #if JucePlugin_Enable_IAA
@@ -1001,11 +1042,11 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
             zerostruct (format);
             format.mSampleRate = sampleRate;
             format.mFormatID = kAudioFormatLinearPCM;
-            format.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked | kAudioFormatFlagsNativeEndian;
-            format.mBitsPerChannel = 8 * sizeof (short);
+            format.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsNonInterleaved | kAudioFormatFlagsNativeEndian | kLinearPCMFormatFlagIsPacked;
+            format.mBitsPerChannel = 8 * sizeof (float);
             format.mFramesPerPacket = 1;
             format.mChannelsPerFrame = (UInt32) jmax (channelData.inputs->numHardwareChannels, channelData.outputs->numHardwareChannels);
-            format.mBytesPerFrame = format.mBytesPerPacket = format.mChannelsPerFrame * sizeof (short);
+            format.mBytesPerFrame = format.mBytesPerPacket = sizeof (float);
 
             AudioUnitSetProperty (audioUnit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input,  0, &format, sizeof (format));
             AudioUnitSetProperty (audioUnit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1, &format, sizeof (format));
@@ -1082,10 +1123,10 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
 
         if (isRunning)
         {
-            if (audioUnit != 0)
+            if (audioUnit != nullptr)
             {
                 AudioComponentInstanceDispose (audioUnit);
-                audioUnit = 0;
+                audioUnit = nullptr;
 
                 if (callback != nullptr)
                     callback->audioDeviceStopped();
@@ -1095,7 +1136,7 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
 
             createAudioUnit();
 
-            if (audioUnit != 0)
+            if (audioUnit != nullptr)
             {
                 isRunning = true;
 
@@ -1172,7 +1213,8 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
                   areChannelsAccessible ((! isInput) || [AVAudioSession sharedInstance].isInputAvailable),
                   activeChannels (limitRequiredChannelsToHardware (numHardwareChannels, requiredChannels)),
                   numActiveChannels (activeChannels.countNumberOfSetBits()),
-                  activeChannelIndicies (getActiveChannelIndicies (activeChannels))
+                  activeChannelIndices (getActiveChannelIndices (activeChannels)),
+                  inactiveChannelIndices (getInactiveChannelIndices (activeChannelIndices, numHardwareChannels))
             {
                #if JUCE_IOS_AUDIO_LOGGING
                 {
@@ -1187,7 +1229,12 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
                     info << ", Are channels available: " << (areChannelsAccessible ? "yes" : "no")
                          << ", Active channel indices:";
 
-                    for (auto i : activeChannelIndicies)
+                    for (auto i : activeChannelIndices)
+                        info << " " << i;
+
+                    info << ", Inactive channel indices:";
+
+                    for (auto i : inactiveChannelIndices)
                         info << " " << i;
 
                     JUCE_IOS_AUDIO_LOG ((isInput ? "Input" : "Output") << " channel configuration: {" << info << "}");
@@ -1202,7 +1249,7 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
             const BigInteger activeChannels;
             const int numActiveChannels;
 
-            const Array<int> activeChannelIndicies;
+            const Array<int> activeChannelIndices, inactiveChannelIndices;
 
         private:
             static StringArray getHardwareChannelNames (const bool isInput)
@@ -1234,7 +1281,7 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
                 return requiredChannels;
             }
 
-            static Array<int> getActiveChannelIndicies (const BigInteger activeChannelsToIndex)
+            static Array<int> getActiveChannelIndices (const BigInteger activeChannelsToIndex)
             {
                 Array<int> result;
 
@@ -1245,6 +1292,21 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
                     result.add (index);
                     index = activeChannelsToIndex.findNextSetBit (++index);
                 }
+
+                return result;
+            }
+
+            static Array<int> getInactiveChannelIndices (const Array<int>& activeIndices, int numChannels)
+            {
+                Array<int> result;
+
+                auto nextActiveChannel = activeIndices.begin();
+
+                for (int i = 0; i < numChannels; ++i)
+                    if (nextActiveChannel != activeIndices.end() && i == *nextActiveChannel)
+                        ++nextActiveChannel;
+                    else
+                        result.add (i);
 
                 return result;
             }
@@ -1281,6 +1343,8 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
         AudioBuffer<float> audioData { 0, 0 };
     };
 
+    CoreAudioTimeConversions timeConversions;
+
     IOChannelData channelData;
 
     BigInteger requestedInputChannels, requestedOutputChannels;
@@ -1307,7 +1371,7 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
 
     MidiMessageCollector* messageCollector = nullptr;
 
-    iOSAudioIODeviceType& deviceType;
+    WeakReference<iOSAudioIODeviceType> deviceType;
     iOSAudioIODevice& owner;
 
     CriticalSection callbackLock;
@@ -1322,12 +1386,13 @@ struct iOSAudioIODevice::Pimpl      : public AudioPlayHead,
     Float64 lastSampleTime;
     unsigned int lastNumFrames;
     int xrun;
+    PlayHead playhead { *this };
 
     JUCE_DECLARE_NON_COPYABLE (Pimpl)
 };
 
 //==============================================================================
-iOSAudioIODevice::iOSAudioIODevice (iOSAudioIODeviceType& ioDeviceType, const String&, const String&)
+iOSAudioIODevice::iOSAudioIODevice (iOSAudioIODeviceType* ioDeviceType, const String&, const String&)
     : AudioIODevice (iOSAudioDeviceName, iOSAudioDeviceName),
       pimpl (new Pimpl (ioDeviceType, *this))
 {
@@ -1372,7 +1437,7 @@ int iOSAudioIODevice::getOutputLatencyInSamples()                   { return rou
 int iOSAudioIODevice::getXRunCount() const noexcept                 { return pimpl->xrun; }
 
 void iOSAudioIODevice::setMidiMessageCollector (MidiMessageCollector* collector) { pimpl->messageCollector = collector; }
-AudioPlayHead* iOSAudioIODevice::getAudioPlayHead() const           { return pimpl.get(); }
+AudioPlayHead* iOSAudioIODevice::getAudioPlayHead() const           { return &pimpl->playhead; }
 
 bool iOSAudioIODevice::isInterAppAudioConnected() const             { return pimpl->interAppAudioConnected; }
 #if JUCE_MODULE_AVAILABLE_juce_graphics
@@ -1401,7 +1466,7 @@ bool iOSAudioIODeviceType::hasSeparateInputsAndOutputs() const            { retu
 
 AudioIODevice* iOSAudioIODeviceType::createDevice (const String& outputDeviceName, const String& inputDeviceName)
 {
-    return new iOSAudioIODevice (*this, outputDeviceName, inputDeviceName);
+    return new iOSAudioIODevice (this, outputDeviceName, inputDeviceName);
 }
 
 void iOSAudioIODeviceType::handleRouteChange (AVAudioSessionRouteChangeReason)
@@ -1412,12 +1477,6 @@ void iOSAudioIODeviceType::handleRouteChange (AVAudioSessionRouteChangeReason)
 void iOSAudioIODeviceType::handleAsyncUpdate()
 {
     callDeviceChangeListeners();
-}
-
-//==============================================================================
-AudioIODeviceType* AudioIODeviceType::createAudioIODeviceType_iOSAudio()
-{
-    return new iOSAudioIODeviceType();
 }
 
 //==============================================================================

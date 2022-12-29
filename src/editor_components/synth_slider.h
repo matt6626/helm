@@ -107,7 +107,7 @@ class SynthSlider : public Slider {
     mopo::ValueDetails details_;
 
     const std::string* string_lookup_;
-    Point<float> click_position_;
+    juce::Point<float> click_position_;
 
     FullInterface* parent_;
 

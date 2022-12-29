@@ -2,7 +2,7 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
@@ -45,7 +45,7 @@ public:
         Make sure this object isn't still being used by an AudioIODevice before
         deleting it!
     */
-    virtual ~AudioSourcePlayer();
+    ~AudioSourcePlayer() override;
 
     //==============================================================================
     /** Changes the current audio source to play from.
@@ -79,12 +79,13 @@ public:
     float getGain() const noexcept                      { return gain; }
 
     //==============================================================================
-    /** Implementation of the AudioIODeviceCallback method. */
-    void audioDeviceIOCallback (const float** inputChannelData,
-                                int totalNumInputChannels,
-                                float** outputChannelData,
-                                int totalNumOutputChannels,
-                                int numSamples) override;
+    /** Implementation of the AudioIODeviceCallbackWithContext method. */
+    void audioDeviceIOCallbackWithContext (const float* const* inputChannelData,
+                                           int totalNumInputChannels,
+                                           float* const* outputChannelData,
+                                           int totalNumOutputChannels,
+                                           int numSamples,
+                                           const AudioIODeviceCallbackContext& context) override;
 
     /** Implementation of the AudioIODeviceCallback method. */
     void audioDeviceAboutToStart (AudioIODevice* device) override;
@@ -105,7 +106,8 @@ private:
     float* outputChans[128];
     const float* inputChans[128];
     AudioBuffer<float> tempBuffer;
-    float lastGain = 1.0f, gain = 1.0f;
+    float lastGain = 1.0f;
+    std::atomic<float> gain { 1.0f };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioSourcePlayer)
 };

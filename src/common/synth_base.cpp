@@ -186,7 +186,7 @@ bool SynthBase::exportToFile() {
   FileChooser save_box("Export Patch", File(), String("*.") + mopo::PATCH_EXTENSION);
   if (!save_box.browseForFileToSave(true))
     return false;
-
+    
   saveToFile(save_box.getResult());
   return true;
 }

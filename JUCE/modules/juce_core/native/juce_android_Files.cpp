@@ -2,7 +2,7 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2017 - ROLI Ltd.
+   Copyright (c) 2022 - Raw Material Software Limited
 
    JUCE is an open source library subject to commercial or open-source
    licensing.
@@ -23,66 +23,176 @@
 namespace juce
 {
 
-#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD) \
+#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD, CALLBACK) \
   METHOD (constructor, "<init>",     "(Landroid/content/Context;Landroid/media/MediaScannerConnection$MediaScannerConnectionClient;)V") \
   METHOD (connect,     "connect",    "()V") \
   METHOD (disconnect,  "disconnect", "()V") \
   METHOD (scanFile,    "scanFile",   "(Ljava/lang/String;Ljava/lang/String;)V") \
 
-DECLARE_JNI_CLASS (MediaScannerConnection, "android/media/MediaScannerConnection");
+DECLARE_JNI_CLASS (MediaScannerConnection, "android/media/MediaScannerConnection")
 #undef JNI_CLASS_MEMBERS
 
-#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD) \
- METHOD (query,            "query",            "(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;") \
- METHOD (openInputStream,  "openInputStream",  "(Landroid/net/Uri;)Ljava/io/InputStream;") \
- METHOD (openOutputStream, "openOutputStream", "(Landroid/net/Uri;)Ljava/io/OutputStream;")
+#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD, CALLBACK) \
+ METHOD (query,                         "query",                        "(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;") \
+ METHOD (openInputStream,               "openInputStream",              "(Landroid/net/Uri;)Ljava/io/InputStream;") \
+ METHOD (openOutputStream,              "openOutputStream",             "(Landroid/net/Uri;)Ljava/io/OutputStream;")
 
-DECLARE_JNI_CLASS (ContentResolver, "android/content/ContentResolver");
+DECLARE_JNI_CLASS (ContentResolver, "android/content/ContentResolver")
 #undef JNI_CLASS_MEMBERS
 
-#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD) \
+#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD, CALLBACK) \
+ METHOD (takePersistableUriPermission,      "takePersistableUriPermission",     "(Landroid/net/Uri;I)V") \
+ METHOD (releasePersistableUriPermission,   "releasePersistableUriPermission",  "(Landroid/net/Uri;I)V") \
+ METHOD (getPersistedUriPermissions,        "getPersistedUriPermissions",       "()Ljava/util/List;")
+
+DECLARE_JNI_CLASS_WITH_MIN_SDK (ContentResolver19, "android/content/ContentResolver", 19)
+#undef JNI_CLASS_MEMBERS
+
+#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD, CALLBACK) \
  METHOD (moveToFirst,     "moveToFirst",     "()Z") \
+ METHOD (moveToNext,      "moveToNext",      "()Z") \
  METHOD (getColumnIndex,  "getColumnIndex",  "(Ljava/lang/String;)I") \
  METHOD (getString,       "getString",       "(I)Ljava/lang/String;") \
- METHOD (close,           "close",           "()V") \
+ METHOD (isNull,          "isNull",          "(I)Z") \
+ METHOD (getInt,          "getInt",          "(I)I") \
+ METHOD (getLong,         "getLong",         "(I)J") \
+ METHOD (close,           "close",           "()V")
 
-DECLARE_JNI_CLASS (AndroidCursor, "android/database/Cursor");
+DECLARE_JNI_CLASS (AndroidCursor, "android/database/Cursor")
 #undef JNI_CLASS_MEMBERS
 
-#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD) \
+#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD, CALLBACK) \
  STATICMETHOD (getExternalStorageDirectory, "getExternalStorageDirectory", "()Ljava/io/File;") \
  STATICMETHOD (getExternalStoragePublicDirectory, "getExternalStoragePublicDirectory", "(Ljava/lang/String;)Ljava/io/File;") \
+ STATICMETHOD (getDataDirectory, "getDataDirectory", "()Ljava/io/File;")
 
-DECLARE_JNI_CLASS (AndroidEnvironment, "android/os/Environment");
+DECLARE_JNI_CLASS (AndroidEnvironment, "android/os/Environment")
 #undef JNI_CLASS_MEMBERS
 
-#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD) \
+#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD, CALLBACK) \
  METHOD (close, "close", "()V") \
  METHOD (flush, "flush", "()V") \
  METHOD (write, "write", "([BII)V")
 
-DECLARE_JNI_CLASS (AndroidOutputStream, "java/io/OutputStream");
+DECLARE_JNI_CLASS (AndroidOutputStream, "java/io/OutputStream")
 #undef JNI_CLASS_MEMBERS
+
+#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD, CALLBACK) \
+ METHOD (close, "close", "()V") \
+ METHOD (read,  "read",  "([B)I") \
+ METHOD (skip,  "skip",  "(J)J")
+
+DECLARE_JNI_CLASS (AndroidInputStream, "java/io/InputStream")
+#undef JNI_CLASS_MEMBERS
+
+#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD, CALLBACK) \
+ FIELD (publicSourceDir, "publicSourceDir", "Ljava/lang/String;") \
+ FIELD (dataDir, "dataDir", "Ljava/lang/String;") \
+ FIELD (targetSdkVersion, "targetSdkVersion", "I")
+
+DECLARE_JNI_CLASS (AndroidApplicationInfo, "android/content/pm/ApplicationInfo")
+#undef JNI_CLASS_MEMBERS
+
+#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD, CALLBACK) \
+ STATICMETHOD (buildChildDocumentsUri,              "buildChildDocumentsUri",               "(Ljava/lang/String;Ljava/lang/String;)Landroid/net/Uri;") \
+ STATICMETHOD (buildDocumentUri,                    "buildDocumentUri",                     "(Ljava/lang/String;Ljava/lang/String;)Landroid/net/Uri;") \
+ STATICMETHOD (buildRecentDocumentsUri,             "buildRecentDocumentsUri",              "(Ljava/lang/String;Ljava/lang/String;)Landroid/net/Uri;") \
+ STATICMETHOD (buildRootUri,                        "buildRootUri",                         "(Ljava/lang/String;Ljava/lang/String;)Landroid/net/Uri;") \
+ STATICMETHOD (buildRootsUri,                       "buildRootsUri",                        "(Ljava/lang/String;)Landroid/net/Uri;") \
+ STATICMETHOD (buildSearchDocumentsUri,             "buildSearchDocumentsUri",              "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Landroid/net/Uri;") \
+ STATICMETHOD (deleteDocument,                      "deleteDocument",                       "(Landroid/content/ContentResolver;Landroid/net/Uri;)Z") \
+ STATICMETHOD (getDocumentId,                       "getDocumentId",                        "(Landroid/net/Uri;)Ljava/lang/String;") \
+ STATICMETHOD (getRootId,                           "getRootId",                            "(Landroid/net/Uri;)Ljava/lang/String;") \
+ STATICMETHOD (isDocumentUri,                       "isDocumentUri",                        "(Landroid/content/Context;Landroid/net/Uri;)Z")
+
+DECLARE_JNI_CLASS_WITH_MIN_SDK (DocumentsContract19, "android/provider/DocumentsContract", 19)
+#undef JNI_CLASS_MEMBERS
+
+#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD, CALLBACK) \
+ STATICMETHOD (buildChildDocumentsUriUsingTree,     "buildChildDocumentsUriUsingTree",      "(Landroid/net/Uri;Ljava/lang/String;)Landroid/net/Uri;") \
+ STATICMETHOD (buildDocumentUriUsingTree,           "buildDocumentUriUsingTree",            "(Landroid/net/Uri;Ljava/lang/String;)Landroid/net/Uri;") \
+ STATICMETHOD (buildTreeDocumentUri,                "buildTreeDocumentUri",                 "(Ljava/lang/String;Ljava/lang/String;)Landroid/net/Uri;") \
+ STATICMETHOD (createDocument,                      "createDocument",                       "(Landroid/content/ContentResolver;Landroid/net/Uri;Ljava/lang/String;Ljava/lang/String;)Landroid/net/Uri;") \
+ STATICMETHOD (getTreeDocumentId,                   "getTreeDocumentId",                    "(Landroid/net/Uri;)Ljava/lang/String;") \
+ STATICMETHOD (renameDocument,                      "renameDocument",                       "(Landroid/content/ContentResolver;Landroid/net/Uri;Ljava/lang/String;)Landroid/net/Uri;")
+
+DECLARE_JNI_CLASS_WITH_MIN_SDK (DocumentsContract21, "android/provider/DocumentsContract", 21)
+#undef JNI_CLASS_MEMBERS
+
+#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD, CALLBACK) \
+ STATICMETHOD (copyDocument,                        "copyDocument",                         "(Landroid/content/ContentResolver;Landroid/net/Uri;Landroid/net/Uri;)Landroid/net/Uri;") \
+ STATICMETHOD (moveDocument,                        "moveDocument",                         "(Landroid/content/ContentResolver;Landroid/net/Uri;Landroid/net/Uri;Landroid/net/Uri;)Landroid/net/Uri;") \
+ STATICMETHOD (removeDocument,                      "removeDocument",                       "(Landroid/content/ContentResolver;Landroid/net/Uri;Landroid/net/Uri;)Z")
+
+DECLARE_JNI_CLASS_WITH_MIN_SDK (DocumentsContract24, "android/provider/DocumentsContract", 24)
+#undef JNI_CLASS_MEMBERS
+
+#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD, CALLBACK) \
+ STATICMETHOD (getSingleton,                        "getSingleton",                         "()Landroid/webkit/MimeTypeMap;") \
+ METHOD       (getExtensionFromMimeType,            "getExtensionFromMimeType",             "(Ljava/lang/String;)Ljava/lang/String;") \
+ METHOD       (getMimeTypeFromExtension,            "getMimeTypeFromExtension",             "(Ljava/lang/String;)Ljava/lang/String;")
+
+DECLARE_JNI_CLASS (AndroidMimeTypeMap, "android/webkit/MimeTypeMap")
+#undef JNI_CLASS_MEMBERS
+
+#define JNI_CLASS_MEMBERS(METHOD, STATICMETHOD, FIELD, STATICFIELD, CALLBACK) \
+ METHOD (getPersistedTime,              "getPersistedTime",               "()J") \
+ METHOD (getUri,                        "getUri",                         "()Landroid/net/Uri;") \
+ METHOD (isReadPermission,              "isReadPermission",               "()Z") \
+ METHOD (isWritePermission,             "isWritePermission",              "()Z")
+
+DECLARE_JNI_CLASS_WITH_MIN_SDK (AndroidUriPermission, "android/content/UriPermission", 19)
+#undef JNI_CLASS_MEMBERS
+
+    //==============================================================================
+static File juceFile (LocalRef<jobject> obj)
+{
+    auto* env = getEnv();
+
+    if (env->IsInstanceOf (obj.get(), JavaFile) != 0)
+        return File (juceString (LocalRef<jstring> ((jstring) env->CallObjectMethod (obj.get(),
+                                                                                     JavaFile.getAbsolutePath))));
+
+    return {};
+}
+
+static File getWellKnownFolder (const char* folderId)
+{
+    auto* env = getEnv();
+    auto fieldId = env->GetStaticFieldID (AndroidEnvironment, folderId, "Ljava/lang/String;");
+
+    if (fieldId == nullptr)
+    {
+        // unknown field in environment
+        jassertfalse;
+        return {};
+    }
+
+    LocalRef<jobject> fieldValue (env->GetStaticObjectField (AndroidEnvironment, fieldId));
+
+    if (fieldValue == nullptr)
+        return {};
+
+    LocalRef<jobject> downloadFolder (env->CallStaticObjectMethod (AndroidEnvironment,
+                                                                   AndroidEnvironment.getExternalStoragePublicDirectory,
+                                                                   fieldValue.get()));
+
+    return (downloadFolder ? juceFile (downloadFolder) : File());
+}
+
+static LocalRef<jobject> urlToUri (const URL& url)
+{
+    return LocalRef<jobject> (getEnv()->CallStaticObjectMethod (AndroidUri, AndroidUri.parse,
+                                                                javaString (url.toString (true)).get()));
+}
 
 //==============================================================================
 struct AndroidContentUriResolver
 {
 public:
-    static LocalRef<jobject> getStreamForContentUri (const URL& url, bool inputStream)
+    static LocalRef<jobject> getContentResolver()
     {
-        // only use this method for content URIs
-        jassert (url.getScheme() == "content");
-        auto* env = getEnv();
-
-        LocalRef<jobject> contentResolver (android.activity.callObjectMethod (JuceAppActivity.getContentResolver));
-
-        if (contentResolver)
-            return LocalRef<jobject> ((env->CallObjectMethod (contentResolver.get(),
-                                                              inputStream ? ContentResolver.openInputStream
-                                                                          : ContentResolver.openOutputStream,
-                                                              urlToUri (url).get())));
-
-        return LocalRef<jobject>();
+        return LocalRef<jobject> (getEnv()->CallObjectMethod (getAppContext().get(), AndroidContext.getContentResolver));
     }
 
     static File getLocalFileFromContentUri (const URL& url)
@@ -110,18 +220,15 @@ public:
             auto downloadId = tokens[1];
 
             if (type.equalsIgnoreCase ("raw"))
-            {
                 return File (downloadId);
-            }
-            else if (type.equalsIgnoreCase ("downloads"))
+
+            if (type.equalsIgnoreCase ("downloads"))
             {
                 auto subDownloadPath = url.getSubPath().fromFirstOccurrenceOf ("tree/downloads", false, false);
-                return File (getWellKnownFolder ("Download").getFullPathName() + "/" + subDownloadPath);
+                return File (getWellKnownFolder ("DIRECTORY_DOWNLOADS").getFullPathName() + "/" + subDownloadPath);
             }
-            else
-            {
-                return getLocalFileFromContentUri (URL ("content://downloads/public_downloads/" + documentId));
-            }
+
+            return getLocalFileFromContentUri (URL ("content://downloads/public_downloads/" + documentId));
         }
         else if (authority == "com.android.providers.media.documents" && documentId.isNotEmpty())
         {
@@ -142,9 +249,9 @@ public:
     {
         auto uri = urlToUri (url);
         auto* env = getEnv();
-        LocalRef<jobject> contentResolver (android.activity.callObjectMethod (JuceAppActivity.getContentResolver));
+        const auto contentResolver = getContentResolver();
 
-        if (contentResolver == 0)
+        if (contentResolver == nullptr)
             return {};
 
         auto filename = getStringUsingDataColumn ("_display_name", env, uri, contentResolver);
@@ -166,7 +273,7 @@ private:
     {
         auto uri = urlToUri (url);
         auto* env = getEnv();
-        LocalRef<jobject> contentResolver (android.activity.callObjectMethod (JuceAppActivity.getContentResolver));
+        const auto contentResolver = getContentResolver();
 
         if (contentResolver)
         {
@@ -187,6 +294,13 @@ private:
             LocalRef<jobject> cursor (env->CallObjectMethod (contentResolver.get(), ContentResolver.query,
                                                              uri.get(), projection.get(), jSelection.get(),
                                                              args.get(), nullptr));
+
+            if (jniCheckHasExceptionOccurredAndClear())
+            {
+                // An exception has occurred, have you acquired RuntimePermission::readExternalStorage permission?
+                jassertfalse;
+                return {};
+            }
 
             if (cursor)
             {
@@ -211,17 +325,6 @@ private:
     }
 
     //==============================================================================
-    static File getWellKnownFolder (const String& folderId)
-    {
-        auto* env = getEnv();
-        LocalRef<jobject> downloadFolder (env->CallStaticObjectMethod (AndroidEnvironment,
-                                                                       AndroidEnvironment.getExternalStoragePublicDirectory,
-                                                                       javaString (folderId).get()));
-
-        return (downloadFolder ? juceFile (downloadFolder) : File());
-    }
-
-    //==============================================================================
     static File getStorageDevicePath (const String& storageId)
     {
         // check for the primary alias
@@ -239,23 +342,22 @@ private:
 
     static File getPrimaryStorageDirectory()
     {
-        auto* env = getEnv();
-        return juceFile (LocalRef<jobject> (env->CallStaticObjectMethod (AndroidEnvironment, AndroidEnvironment.getExternalStorageDirectory)));
+        return juceFile (LocalRef<jobject> (getEnv()->CallStaticObjectMethod (AndroidEnvironment, AndroidEnvironment.getExternalStorageDirectory)));
     }
 
     static Array<File> getSecondaryStorageDirectories()
     {
         Array<File> results;
 
-        if (getSDKVersion() >= 19)
+        if (getAndroidSDKVersion() >= 19)
         {
             auto* env = getEnv();
-            static jmethodID m = (env->GetMethodID (JuceAppActivity, "getExternalFilesDirs",
+            static jmethodID m = (env->GetMethodID (AndroidContext, "getExternalFilesDirs",
                                                     "(Ljava/lang/String;)[Ljava/io/File;"));
-            if (m == 0)
+            if (m == nullptr)
                 return {};
 
-            auto paths = convertFileArray (LocalRef<jobject> (android.activity.callObjectMethod (m, nullptr)));
+            auto paths = convertFileArray (LocalRef<jobject> (env->CallObjectMethod (getAppContext().get(), m, nullptr)));
 
             for (auto path : paths)
                 results.add (getMountPointForFile (path));
@@ -273,9 +375,8 @@ private:
                 return {};
 
             auto rootFsDevice = info.st_dev;
-            DirectoryIterator iter (mountFolder, false, "*", File::findDirectories);
 
-            while (iter.next())
+            for (const auto& iter : RangedDirectoryIterator (mountFolder, false, "*", File::findDirectories))
             {
                 auto candidate = iter.getFile();
 
@@ -341,33 +442,6 @@ private:
         return files;
     }
 
-    static File juceFile (LocalRef<jobject> obj)
-    {
-        auto* env = getEnv();
-
-        if (env->IsInstanceOf (obj.get(), JavaFile) != 0)
-            return File (juceString (LocalRef<jstring> ((jstring) env->CallObjectMethod (obj.get(),
-                                                        JavaFile.getAbsolutePath))));
-
-        return {};
-    }
-
-    //==============================================================================
-    static int getSDKVersion()
-    {
-        static int sdkVersion
-            = getEnv()->CallStaticIntMethod (JuceAppActivity,
-                                             JuceAppActivity.getAndroidSDKVersion);
-
-        return sdkVersion;
-    }
-
-    static LocalRef<jobject> urlToUri (const URL& url)
-    {
-        return LocalRef<jobject> (getEnv()->CallStaticObjectMethod (AndroidUri, AndroidUri.parse,
-                                                                    javaString (url.toString (true)).get()));
-    }
-
     //==============================================================================
     static String getStringUsingDataColumn (const String& columnNameToUse, JNIEnv* env,
                                             const LocalRef<jobject>& uri,
@@ -380,7 +454,14 @@ private:
                                                          uri.get(), projection.get(), nullptr,
                                                          nullptr, nullptr));
 
-        if (cursor == 0)
+        if (jniCheckHasExceptionOccurredAndClear())
+        {
+            // An exception has occurred, have you acquired RuntimePermission::readExternalStorage permission?
+            jassertfalse;
+            return {};
+        }
+
+        if (cursor == nullptr)
             return {};
 
         String fileName;
@@ -408,12 +489,10 @@ private:
 //==============================================================================
 struct AndroidContentUriOutputStream :  public OutputStream
 {
-    AndroidContentUriOutputStream (LocalRef<jobject>&& outputStream)
-        : stream (outputStream)
-    {
-    }
+    explicit AndroidContentUriOutputStream (LocalRef<jobject>&& streamIn)
+        : stream (std::move (streamIn)) {}
 
-    ~AndroidContentUriOutputStream()
+    ~AndroidContentUriOutputStream() override
     {
         stream.callVoidMethod (AndroidOutputStream.close);
     }
@@ -454,12 +533,139 @@ struct AndroidContentUriOutputStream :  public OutputStream
     int64 pos = 0;
 };
 
-OutputStream* juce_CreateContentURIOutputStream (const URL& url)
+//==============================================================================
+class CachedByteArray
 {
-    auto stream = AndroidContentUriResolver::getStreamForContentUri (url, false);
+public:
+    CachedByteArray() = default;
 
-    return (stream.get() != 0 ? new AndroidContentUriOutputStream (static_cast<LocalRef<jobject>&&> (stream)) : nullptr);
-}
+    explicit CachedByteArray (jsize sizeIn)
+        : byteArray { LocalRef<jbyteArray> { getEnv()->NewByteArray (sizeIn) } },
+          size (sizeIn) {}
+
+    jbyteArray getNativeArray() const { return byteArray.get(); }
+    jsize getSize() const { return size; }
+
+private:
+    GlobalRefImpl<jbyteArray> byteArray;
+    jsize size = 0;
+};
+
+//==============================================================================
+struct AndroidStreamHelpers
+{
+    enum class StreamKind { output, input };
+
+    static LocalRef<jobject> createStream (const GlobalRef& uri, StreamKind kind)
+    {
+        auto* env = getEnv();
+        auto contentResolver = AndroidContentUriResolver::getContentResolver();
+
+        if (contentResolver == nullptr)
+            return {};
+
+        return LocalRef<jobject> (env->CallObjectMethod (contentResolver.get(),
+                                                         kind == StreamKind::input ? ContentResolver.openInputStream
+                                                                                   : ContentResolver.openOutputStream,
+                                                         uri.get()));
+    }
+};
+
+//==============================================================================
+struct AndroidContentUriInputStream :  public InputStream
+{
+    explicit AndroidContentUriInputStream (const GlobalRef& uriIn)
+        : uri (uriIn),
+          stream (AndroidStreamHelpers::createStream (uri, AndroidStreamHelpers::StreamKind::input))
+    {}
+
+    ~AndroidContentUriInputStream() override
+    {
+        getEnv()->CallVoidMethod (stream.get(), AndroidInputStream.close);
+        jniCheckHasExceptionOccurredAndClear();
+    }
+
+    int64 getTotalLength() override { return -1; }
+
+    bool isExhausted() override { return exhausted; }
+
+    int read (void* destBuffer, int maxBytesToRead) override
+    {
+        auto* env = getEnv();
+
+        if ((jsize) maxBytesToRead != byteArray.getSize())
+            byteArray = CachedByteArray { (jsize) maxBytesToRead };
+
+        const auto result = env->CallIntMethod (stream.get(), AndroidInputStream.read, byteArray.getNativeArray());
+
+        if (jniCheckHasExceptionOccurredAndClear() || result == -1)
+        {
+            exhausted = true;
+            return -1;
+        }
+
+        pos += result;
+
+        auto* rawBytes = env->GetByteArrayElements (byteArray.getNativeArray(), nullptr);
+        std::memcpy (destBuffer, rawBytes, static_cast<size_t> (result));
+        env->ReleaseByteArrayElements (byteArray.getNativeArray(), rawBytes, 0);
+
+        return result;
+    }
+
+    bool setPosition (int64 newPos) override
+    {
+        if (newPos == pos)
+            return true;
+
+        if (pos < newPos)
+            return skipImpl (newPos - pos);
+
+        AndroidContentUriInputStream (uri).swap (*this);
+        return skipImpl (newPos);
+    }
+
+    int64 getPosition() override
+    {
+        return pos;
+    }
+
+    bool openedSuccessfully() const { return stream != nullptr; }
+
+    void skipNextBytes (int64 num) override
+    {
+        skipImpl (num);
+    }
+
+private:
+    bool skipImpl (int64 num)
+    {
+        if (stream == nullptr)
+            return false;
+
+        const auto skipped = getEnv()->CallLongMethod (stream, AndroidInputStream.skip, (jlong) num);
+
+        if (jniCheckHasExceptionOccurredAndClear())
+            return false;
+
+        pos += skipped;
+        return skipped == num;
+    }
+
+    auto tie() { return std::tie (uri, byteArray, stream, pos, exhausted); }
+
+    void swap (AndroidContentUriInputStream& other) noexcept
+    {
+        auto toSwap = other.tie();
+        tie().swap (toSwap);
+    }
+
+    GlobalRef uri;
+    CachedByteArray byteArray;
+    GlobalRef stream;
+    int64 pos = 0;
+    bool exhausted = false;
+};
 
 //==============================================================================
 class MediaScannerConnectionClient : public AndroidInterfaceImplementer
@@ -511,9 +717,24 @@ String File::getVersion() const
     return {};
 }
 
-static File getSpecialFile (jmethodID type)
+static File getDocumentsDirectory()
 {
-    return File (juceString (LocalRef<jstring> ((jstring) getEnv()->CallStaticObjectMethod (JuceAppActivity, type))));
+    auto* env = getEnv();
+
+    if (getAndroidSDKVersion() >= 19)
+        return getWellKnownFolder ("DIRECTORY_DOCUMENTS");
+
+    return juceFile (LocalRef<jobject> (env->CallStaticObjectMethod (AndroidEnvironment, AndroidEnvironment.getDataDirectory)));
+}
+
+static File getAppDataDir (bool dataDir)
+{
+    auto* env = getEnv();
+
+    LocalRef<jobject> applicationInfo (env->CallObjectMethod (getAppContext().get(), AndroidContext.getApplicationInfo));
+    LocalRef<jobject> jString (env->GetObjectField (applicationInfo.get(), dataDir ? AndroidApplicationInfo.dataDir : AndroidApplicationInfo.publicSourceDir));
+
+    return  {juceString ((jstring) jString.get())};
 }
 
 File File::getSpecialLocation (const SpecialLocationType type)
@@ -524,20 +745,41 @@ File File::getSpecialLocation (const SpecialLocationType type)
         case userApplicationDataDirectory:
         case userDesktopDirectory:
         case commonApplicationDataDirectory:
-            return File (android.appDataDir);
+        {
+            static File appDataDir = getAppDataDir (true);
+            return appDataDir;
+        }
 
         case userDocumentsDirectory:
-        case commonDocumentsDirectory:  return getSpecialFile (JuceAppActivity.getDocumentsFolder);
-        case userPicturesDirectory:     return getSpecialFile (JuceAppActivity.getPicturesFolder);
-        case userMusicDirectory:        return getSpecialFile (JuceAppActivity.getMusicFolder);
-        case userMoviesDirectory:       return getSpecialFile (JuceAppActivity.getMoviesFolder);
+        case commonDocumentsDirectory:
+        {
+            static auto docsDir = getDocumentsDirectory();
+            return docsDir;
+        }
+
+        case userPicturesDirectory:
+        {
+            static auto picturesDir = getWellKnownFolder ("DIRECTORY_PICTURES");
+            return picturesDir;
+        }
+
+        case userMusicDirectory:
+        {
+            static auto musicDir = getWellKnownFolder ("DIRECTORY_MUSIC");
+            return musicDir;
+        }
+        case userMoviesDirectory:
+        {
+            static auto moviesDir = getWellKnownFolder ("DIRECTORY_MOVIES");
+            return moviesDir;
+        }
 
         case globalApplicationsDirectory:
             return File ("/system/app");
 
         case tempDirectory:
         {
-            File tmp = File (android.appDataDir).getChildFile (".temp");
+            File tmp = getSpecialLocation (commonApplicationDataDirectory).getChildFile (".temp");
             tmp.createDirectory();
             return File (tmp.getFullPathName());
         }
@@ -546,7 +788,7 @@ File File::getSpecialLocation (const SpecialLocationType type)
         case currentExecutableFile:
         case currentApplicationFile:
         case hostApplicationPath:
-            return juce_getExecutableFile();
+            return getAppDataDir (false);
 
         default:
             jassertfalse; // unknown type?
@@ -567,8 +809,13 @@ bool File::moveToTrash() const
 
 JUCE_API bool JUCE_CALLTYPE Process::openDocument (const String& fileName, const String&)
 {
-    const LocalRef<jstring> t (javaString (fileName));
-    android.activity.callVoidMethod (JuceAppActivity.launchURL, t.get());
+    URL targetURL (fileName);
+    auto* env = getEnv();
+
+    const LocalRef<jstring> action (javaString ("android.intent.action.VIEW"));
+    LocalRef<jobject> intent (env->NewObject (AndroidIntent, AndroidIntent.constructWithUri, action.get(), urlToUri (targetURL).get()));
+
+    env->CallVoidMethod (getCurrentActivity(), AndroidContext.startActivity, intent.get());
     return true;
 }
 
@@ -581,10 +828,10 @@ class SingleMediaScanner : public MediaScannerConnectionClient
 {
 public:
     SingleMediaScanner (const String& filename)
-        : msc (getEnv()->NewObject (MediaScannerConnection,
-                                    MediaScannerConnection.constructor,
-                                    android.activity.get(),
-                                    CreateJavaInterface (this, "android/media/MediaScannerConnection$MediaScannerConnectionClient").get())),
+        : msc (LocalRef<jobject> (getEnv()->NewObject (MediaScannerConnection,
+                                                       MediaScannerConnection.constructor,
+                                                       getAppContext().get(),
+                                                       CreateJavaInterface (this, "android/media/MediaScannerConnection$MediaScannerConnectionClient").get()))),
           file (filename)
     {
         getEnv()->CallVoidMethod (msc.get(), MediaScannerConnection.connect);
@@ -609,7 +856,7 @@ private:
 
 void FileOutputStream::flushInternal()
 {
-    if (fileHandle != 0)
+    if (fileHandle != nullptr)
     {
         if (fsync (getFD (fileHandle)) == -1)
             status = getResultForErrno();

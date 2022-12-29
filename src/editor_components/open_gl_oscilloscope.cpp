@@ -59,18 +59,18 @@ void OpenGLOscilloscope::paintBackground(Graphics& g) {
 
 void OpenGLOscilloscope::init(OpenGLContext& open_gl_context) {
   open_gl_context.extensions.glGenBuffers(1, &line_buffer_);
-  open_gl_context.extensions.glBindBuffer(GL_ARRAY_BUFFER, line_buffer_);
+    open_gl_context.extensions.glBindBuffer(juce::gl::GL_ARRAY_BUFFER, line_buffer_);
 
   GLsizeiptr vert_size = static_cast<GLsizeiptr>(2 * RESOLUTION * sizeof(float));
-  open_gl_context.extensions.glBufferData(GL_ARRAY_BUFFER, vert_size,
-                                          line_data_, GL_STATIC_DRAW);
+    open_gl_context.extensions.glBufferData(juce::gl::GL_ARRAY_BUFFER, vert_size,
+                                            line_data_, juce::gl::GL_STATIC_DRAW);
 
   open_gl_context.extensions.glGenBuffers(1, &line_indices_buffer_);
-  open_gl_context.extensions.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, line_indices_buffer_);
+    open_gl_context.extensions.glBindBuffer(juce::gl::GL_ELEMENT_ARRAY_BUFFER, line_indices_buffer_);
 
   GLsizeiptr line_size = static_cast<GLsizeiptr>(2 * RESOLUTION * sizeof(int));
-  open_gl_context.extensions.glBufferData(GL_ELEMENT_ARRAY_BUFFER, line_size,
-                                          line_indices_, GL_STATIC_DRAW);
+    open_gl_context.extensions.glBufferData(juce::gl::GL_ELEMENT_ARRAY_BUFFER, line_size,
+                                            line_indices_, juce::gl::GL_STATIC_DRAW);
 
   const char* vertex_shader = Shaders::getShader(Shaders::kOscilloscopeVertex);
   const char* fragment_shader = Shaders::getShader(Shaders::kOscilloscopeFragment);
@@ -86,10 +86,10 @@ void OpenGLOscilloscope::init(OpenGLContext& open_gl_context) {
 }
 
 void OpenGLOscilloscope::drawLines(OpenGLContext& open_gl_context) {
-  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  glEnable(GL_LINE_SMOOTH);
-  glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
-  glLineWidth(1.0f);
+  juce::gl::glBlendFunc(juce::gl::GL_SRC_ALPHA, juce::gl::GL_ONE_MINUS_SRC_ALPHA);
+  juce::gl::glEnable(juce::gl::GL_LINE_SMOOTH);
+  juce::gl::glHint(juce::gl::GL_LINE_SMOOTH_HINT, juce::gl::GL_NICEST);
+  juce::gl::glLineWidth(1.0f);
 
   setViewPort(open_gl_context);
 
@@ -103,30 +103,30 @@ void OpenGLOscilloscope::drawLines(OpenGLContext& open_gl_context) {
                                                        remainder);
     }
 
-    open_gl_context.extensions.glBindBuffer(GL_ARRAY_BUFFER, line_buffer_);
+      open_gl_context.extensions.glBindBuffer(juce::gl::GL_ARRAY_BUFFER, line_buffer_);
 
     GLsizeiptr vert_size = static_cast<GLsizeiptr>(2 * RESOLUTION * sizeof(float));
-    open_gl_context.extensions.glBufferData(GL_ARRAY_BUFFER, vert_size,
-                                            line_data_, GL_STATIC_DRAW);
+      open_gl_context.extensions.glBufferData(juce::gl::GL_ARRAY_BUFFER, vert_size,
+                                            line_data_, juce::gl::GL_STATIC_DRAW);
 
-    open_gl_context.extensions.glBindBuffer(GL_ARRAY_BUFFER, 0);
+      open_gl_context.extensions.glBindBuffer(juce::gl::GL_ARRAY_BUFFER, 0);
   }
 
   shader_->use();
-  open_gl_context.extensions.glBindBuffer(GL_ARRAY_BUFFER, line_buffer_);
-  open_gl_context.extensions.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, line_indices_buffer_);
+    open_gl_context.extensions.glBindBuffer(juce::gl::GL_ARRAY_BUFFER, line_buffer_);
+    open_gl_context.extensions.glBindBuffer(juce::gl::GL_ELEMENT_ARRAY_BUFFER, line_indices_buffer_);
 
-  open_gl_context.extensions.glVertexAttribPointer(position_->attributeID, 2, GL_FLOAT,
-                                                   GL_FALSE, 2 * sizeof(float), 0);
+    open_gl_context.extensions.glVertexAttribPointer(position_->attributeID, 2, juce::gl::GL_FLOAT,
+                                                     juce::gl::GL_FALSE, 2 * sizeof(float), 0);
   open_gl_context.extensions.glEnableVertexAttribArray(position_->attributeID);
-  glDrawElements(GL_LINES, 2 * RESOLUTION, GL_UNSIGNED_INT, 0);
+  juce::gl::glDrawElements(juce::gl::GL_LINES, 2 * RESOLUTION, juce::gl::GL_UNSIGNED_INT, 0);
 
   open_gl_context.extensions.glDisableVertexAttribArray(position_->attributeID);
 
-  open_gl_context.extensions.glBindBuffer(GL_ARRAY_BUFFER, 0);
-  open_gl_context.extensions.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-  glDisable(GL_LINE_SMOOTH);
-  MOPO_ASSERT(glGetError() == GL_NO_ERROR);
+    open_gl_context.extensions.glBindBuffer(juce::gl::GL_ARRAY_BUFFER, 0);
+    open_gl_context.extensions.glBindBuffer(juce::gl::GL_ELEMENT_ARRAY_BUFFER, 0);
+  juce::gl::glDisable(juce::gl::GL_LINE_SMOOTH);
+  MOPO_ASSERT(juce::gl::glGetError() == juce::gl::GL_NO_ERROR);
 }
 
 void OpenGLOscilloscope::render(OpenGLContext& open_gl_context, bool animate) {
